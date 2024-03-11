@@ -361,7 +361,9 @@ app.get("/dashboard/api/*", async (req, res) => {
         }
     }
 })
-
+app.get("/", (req, res) => {
+    res.redirect("/dashboard/index.html")
+})
 app.get("/*", async (req, res) => {
     // 获取请求开始时间戳
     let startTime = new Date().getTime()
@@ -381,11 +383,12 @@ app.get("/*", async (req, res) => {
         let costTime = endTime - startTime
         console.log("Cost "+costTime+"ms")
 
+        res.redirect("/dashboard/index.html")
 
 
-        res.header("Content-Type", "text/html; charset=utf-8"); // 响应类型
-        res.status(302).setHeader("Location","/dashboard")
-        res.send()
+        // res.header("Content-Type", "text/html; charset=utf-8"); // 响应类型
+        // res.status(302).setHeader("Location","/dashboard")
+        // res.send()
     } else {
 
 
