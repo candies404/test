@@ -60,7 +60,7 @@ function ml_getCustomUrl() {
 function ml_sessionLogin(password) {
     return new Promise((resolve, reject) => {
         var settings = {
-            "url": customUrl+"/admin/api/auth?session="+JSON.stringify({"type":"session","session":password}),
+            "url": customUrl+"/dashboard/api/auth?session="+JSON.stringify({"type":"session","session":password}),
             "method": "GET",
             "timeout": 0,
             async: false,
@@ -111,7 +111,7 @@ function ml_convert(to, path, session) {
 
     return new Promise((resolve, reject) => {
         var settings = {
-            "url": customUrl+"/admin/api/create?session="+session+"&to="+btoa(to)+requestAdd,
+            "url": customUrl+"/dashboard/api/create?session="+session+"&to="+btoa(to)+requestAdd,
             "method": "GET",
             "timeout": 0,
             async: false,
