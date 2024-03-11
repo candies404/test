@@ -384,7 +384,7 @@ app.get("/*", async (req, res) => {
 
 
         res.header("Content-Type", "text/html; charset=utf-8"); // 响应类型
-        res.status(302).setHeeader("Location","/dashboard")
+        res.status(302).setHeader("Location","/dashboard")
         res.send()
     } else {
 
