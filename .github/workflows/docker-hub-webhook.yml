@@ -1,0 +1,17 @@
+name: Docker Hub Webhook
+
+on:
+  repository_dispatch:
+    types: [docker-hub-push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      - name: Run your desired actions
+        run: |
+          # 在这里添加你想要执行的命令
+          echo "Docker image was updated!"
