@@ -1,0 +1,59 @@
+name: one-hub 前端修改
+
+on:
+  #  schedule:
+  #    - cron: '0 0 * * *'  # 每天 UTC 0:00 运行（北京时间 8:00）
+  workflow_dispatch:        # 支持手动触发
+
+jobs:
+  one-hub-custom:
+    name: '自定义前端 One Hub'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      TZ: Asia/Shanghai
+    permissions:
+      issues: write
+    steps:
+      - name: 检查更新
+        id: check
+        run: |
+          # 获取最新的commit短sha
+          CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
+          
+          # 获取issue中的sha
+          ISSUES=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues?labels=one-hub-sha")
+          
+          if [ "$(echo $ISSUES | jq '. | length')" -eq "0" ]; then
+            echo "没有找到记录SHA的issue，创建新issue"
+            
+            # 创建新issue
+            curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -d "{\"title\":\"One Hub SHA Record\",\"body\":\"$CURRENT_SHA\",\"labels\":[\"one-hub-sha\"]}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues"
+              
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            
+          else
+            # 获取issue中记录的sha
+            ISSUE_NUMBER=$(echo $ISSUES | jq -r '.[0].number')
+            RECORDED_SHA=$(echo $ISSUES | jq -r '.[0].body')
+            
+            echo "当前 SHA: $CURRENT_SHA"
+            echo "记录的 SHA: $RECORDED_SHA"
+            
+            if [ "$CURRENT_SHA" != "$RECORDED_SHA" ]; then
+              echo "检测到更新"
+              
+              # 更新issue中的sha
+              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -d "{\"body\":\"$CURRENT_SHA\"}" \
+                "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER"
+                
+              echo "has_update=true" >> $GITHUB_OUTPUT
+            else
+              echo "24小时内没有更新"
+              echo "has_update=false" >> $GITHUB_OUTPUT
+            fi
+          fi
