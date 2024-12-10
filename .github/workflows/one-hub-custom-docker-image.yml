@@ -23,9 +23,9 @@ jobs:
           CURRENT_SHA=$(echo $COMMIT_INFO | jq -r '.sha' | cut -c1-7)
           COMMIT_TIME=$(echo $COMMIT_INFO | jq -r '.commit.committer.date')
           
-          # 计算时间差
-          NOW=$(date +%s)
-          COMMIT_TIME_SEC=$(date -d "$COMMIT_TIME" +%s)
+          # 计算时间差，确保使用UTC时间
+          NOW=$(date -u +%s)
+          COMMIT_TIME_SEC=$(date -u -d "$COMMIT_TIME" +%s)
           DIFF=$((NOW - COMMIT_TIME_SEC))
           
           # 获取issue中的sha，使用 -s 静默模式
@@ -77,8 +77,8 @@ jobs:
           fi
           
           # 输出时间信息供调试
-          COMMIT_DATE=$(date -d "@$COMMIT_TIME_SEC" '+%Y-%m-%d %H:%M:%S')
-          CURRENT_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+          COMMIT_DATE=$(date -u -d "@$COMMIT_TIME_SEC" '+%Y-%m-%d %H:%M:%S')
+          CURRENT_DATE=$(date -u '+%Y-%m-%d %H:%M:%S')
           HOURS=$((DIFF / 3600))
           echo "最新提交时间: $COMMIT_DATE"
           echo "当前时间: $CURRENT_DATE"
