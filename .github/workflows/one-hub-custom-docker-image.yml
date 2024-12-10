@@ -18,8 +18,15 @@ jobs:
       - name: 检查更新
         id: check
         run: |
-          # 获取最新的commit短sha
-          CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
+          # 获取最新commit的信息
+          COMMIT_INFO=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main")
+          CURRENT_SHA=$(echo $COMMIT_INFO | jq -r '.sha' | cut -c1-7)
+          COMMIT_TIME=$(echo $COMMIT_INFO | jq -r '.commit.committer.date')
+          
+          # 计算时间差
+          NOW=$(date +%s)
+          COMMIT_TIME_SEC=$(date -d "$COMMIT_TIME" +%s)
+          DIFF=$((NOW - COMMIT_TIME_SEC))
           
           # 获取issue中的sha
           ISSUES=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -28,12 +35,21 @@ jobs:
           if [ "$(echo $ISSUES | jq '. | length')" -eq "0" ]; then
             echo "没有找到记录SHA的issue，创建新issue"
             
-            # 创建新issue
-            curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -d "{\"title\":\"One Hub SHA Record\",\"body\":\"$CURRENT_SHA\",\"labels\":[\"one-hub-sha\"]}" \
-              "https://api.github.com/repos/${{ github.repository }}/issues"
-              
-            echo "has_update=true" >> $GITHUB_OUTPUT
+            if [ $DIFF -le 86400 ]; then
+              echo "24小时内有更新"
+              # 创建新issue
+              curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -d "{\"title\":\"One Hub SHA Record\",\"body\":\"$CURRENT_SHA\",\"labels\":[\"one-hub-sha\"]}" \
+                "https://api.github.com/repos/${{ github.repository }}/issues"
+              echo "has_update=true" >> $GITHUB_OUTPUT
+            else
+              echo "24小时内没有更新"
+              # 仍然创建issue，但标记为无更新
+              curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -d "{\"title\":\"One Hub SHA Record\",\"body\":\"$CURRENT_SHA\",\"labels\":[\"one-hub-sha\"]}" \
+                "https://api.github.com/repos/${{ github.repository }}/issues"
+              echo "has_update=false" >> $GITHUB_OUTPUT
+            fi
             
           else
             # 获取issue中记录的sha
@@ -43,8 +59,8 @@ jobs:
             echo "当前 SHA: $CURRENT_SHA"
             echo "记录的 SHA: $RECORDED_SHA"
             
-            if [ "$CURRENT_SHA" != "$RECORDED_SHA" ]; then
-              echo "检测到更新"
+            if [ "$CURRENT_SHA" != "$RECORDED_SHA" ] && [ $DIFF -le 86400 ]; then
+              echo "检测到24小时内有更新"
               
               # 更新issue中的sha
               curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -53,7 +69,23 @@ jobs:
                 
               echo "has_update=true" >> $GITHUB_OUTPUT
             else
-              echo "24小时内没有更新"
+              if [ "$CURRENT_SHA" != "$RECORDED_SHA" ]; then
+                echo "虽然有新提交，但不在24小时内"
+                # 更新issue中的sha，但标记为无更新
+                curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  -d "{\"body\":\"$CURRENT_SHA\"}" \
+                  "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER"
+              else
+                echo "没有新的提交"
+              fi
               echo "has_update=false" >> $GITHUB_OUTPUT
             fi
           fi
+          
+          # 输出时间信息供调试
+          COMMIT_DATE=$(date -d "@$COMMIT_TIME_SEC" '+%Y-%m-%d %H:%M:%S')
+          CURRENT_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+          HOURS=$((DIFF / 3600))
+          echo "最新提交时间: $COMMIT_DATE"
+          echo "当前时间: $CURRENT_DATE"
+          echo "相差: ${HOURS} 小时"
