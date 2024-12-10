@@ -19,7 +19,7 @@ jobs:
         id: check
         run: |
           # 获取最新commit的信息
-          COMMIT_INFO=$(curl -s "https://api.github.com/repos/candies404/test/commits/main")
+          COMMIT_INFO=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main")
           CURRENT_SHA=$(echo $COMMIT_INFO | jq -r '.sha' | cut -c1-7)
           COMMIT_TIME=$(echo $COMMIT_INFO | jq -r '.commit.committer.date')
           
@@ -61,25 +61,17 @@ jobs:
             echo "当前 SHA: $CURRENT_SHA"
             echo "记录的 SHA: $RECORDED_SHA"
             
-            if [ "$CURRENT_SHA" != "$RECORDED_SHA" ] && [ $DIFF -le 86400 ]; then
-              echo "检测到24小时内有更新"
+            if [ "$CURRENT_SHA" != "$RECORDED_SHA" ]; then
+              echo "检测到更新"
               
-              # 更新issue中的sha，静默处理响应
+              # 更新issue中的sha
               curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                 -d "{\"body\":\"$CURRENT_SHA\"}" \
                 "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" > /dev/null
                 
               echo "has_update=true" >> $GITHUB_OUTPUT
             else
-              if [ "$CURRENT_SHA" != "$RECORDED_SHA" ]; then
-                echo "虽然有新提交，但不在24小时内"
-                # 更新issue中的sha，静默处理响应
-                curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                  -d "{\"body\":\"$CURRENT_SHA\"}" \
-                  "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" > /dev/null
-              else
-                echo "没有新的提交"
-              fi
+              echo "没有检测到更新"
               echo "has_update=false" >> $GITHUB_OUTPUT
             fi
           fi
