@@ -77,9 +77,13 @@ jobs:
           fi
           
           # 输出时间信息供调试
-          COMMIT_DATE=$(date -u -d "@$COMMIT_TIME_SEC" '+%Y-%m-%dT%H:%M:%SZ')
-          CURRENT_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          COMMIT_DATE=$(date -u -d "@$COMMIT_TIME_SEC" '+%Y-%m-%d %H:%M:%S UTC')
+          CURRENT_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          COMMIT_DATE_LOCAL=$(date -d "@$COMMIT_TIME_SEC" '+%Y-%m-%d %H:%M:%S %Z')
+          CURRENT_DATE_LOCAL=$(date '+%Y-%m-%d %H:%M:%S %Z')
           HOURS=$((DIFF / 3600))
-          echo "最新提交时间: $COMMIT_DATE"
-          echo "当前时间: $CURRENT_DATE"
+          echo "最新提交时间(UTC): $COMMIT_DATE"
+          echo "当前时间(UTC): $CURRENT_DATE"
+          echo "最新提交时间(本地): $COMMIT_DATE_LOCAL"
+          echo "当前时间(本地): $CURRENT_DATE_LOCAL"
           echo "相差: ${HOURS} 小时"
