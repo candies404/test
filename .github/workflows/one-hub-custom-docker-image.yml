@@ -1,9 +1,7 @@
 name: one-hub 前端修改
 
 on:
-  #  schedule:
-  #    - cron: '0 0 * * *'  # 每天 UTC 0:00 运行（北京时间 8:00）
-  workflow_dispatch:        # 支持手动触发
+  workflow_dispatch:
 
 jobs:
   one-hub-custom:
@@ -18,9 +16,9 @@ jobs:
       - name: 检查更新
         id: check
         run: |
-          # 获取 MartiaBE/one-hub 仓库的最新 SHA 值
-          CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha')
-          ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open" | jq -r '[.[] | select(.title == "one-hub")]')
+          # 获取 MartiaBE/one-hub 仓库的最新 短SHA（前7位）
+          CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
+          ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
           
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
             echo "创建新 issue"
@@ -30,7 +28,7 @@ jobs:
           else
             ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-            ISSUE_SHA=$(echo "$ISSUE_BODY" | grep -oP 'one-hub-update:\K\w+')
+            ISSUE_SHA=$(echo "$ISSUE_BODY" | grep -oP 'one-hub-update:\K\w{7}')
             
             if [ "$CURRENT_SHA" == "$ISSUE_SHA" ]; then
               echo "SHA 值一致，不更新"
@@ -38,7 +36,7 @@ jobs:
             else
               echo "SHA 值不一致，更新"
               # 更新 issue 内容
-              NEW_BODY="${ISSUE_BODY}\none-hub-update:$CURRENT_SHA"
+              NEW_BODY="${ISSUE_BODY}"$'\n'"one-hub-update:$CURRENT_SHA"
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
               curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID"
               echo "file_updated=true" >> $GITHUB_OUTPUT
@@ -62,14 +60,13 @@ jobs:
       - name: 检查 TableRow.jsx 更新
         id: check_file
         run: |
-          # 获取 MartiaBE/one-hub 仓库的最新 TableRow.jsx SHA 值
-          CURRENT_TABLE_ROW_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r '.[0].sha')
+          # 获取 MartiaBE/one-hub 仓库的最新 TableRow.jsx 短SHA（前7位）
+          CURRENT_TABLE_ROW_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r '.[0].sha' | cut -c1-7)
           # 检查当前仓库中是否存在标题为 "TableRow.jsx" 的 issue
-          TABLE_ROW_ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open" | jq -r '[.[] | select(.title == "TableRow.jsx")]')
+          TABLE_ROW_ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "TableRow.jsx")]')
           
           if [ "$(echo "$TABLE_ROW_ISSUE_INFO" | jq 'length')" -eq 0 ]; then
-            echo "没有找到 'TableRow.jsx' 的 issue，写入当前 SHA 值到 issue"
-            # 创建 issue，写入当前 TableRow.jsx SHA 值
+            echo "创建 TableRow.jsx issue"
             JSON_DATA=$(jq -n --arg title "TableRow.jsx" --arg body "TableRow.jsx-sha:$CURRENT_TABLE_ROW_SHA" '{title: $title, body: $body}')
             curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues"
             echo "file_updated=true" >> $GITHUB_OUTPUT
@@ -77,7 +74,7 @@ jobs:
             # 获取 issue 中的 TableRow.jsx SHA 值
             ISSUE_ID=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.[0].body')
-            ISSUE_SHA=$(echo "$ISSUE_BODY" | grep -oP 'TableRow.jsx-sha:\K\w+')
+            ISSUE_SHA=$(echo "$ISSUE_BODY" | grep -oP 'TableRow.jsx-sha:\K\w{7}')
             
             if [ "$CURRENT_TABLE_ROW_SHA" == "$ISSUE_SHA" ]; then
               echo "TableRow.jsx SHA 值一致，不更新"
@@ -85,14 +82,14 @@ jobs:
             else
               echo "TableRow.jsx SHA 值不一致，更新"
               # 更新 issue 内容
-              NEW_BODY="${ISSUE_BODY}\nTableRow.jsx-sha:$CURRENT_TABLE_ROW_SHA"
+              NEW_BODY="${ISSUE_BODY}"$'\n'"TableRow.jsx-sha:$CURRENT_TABLE_ROW_SHA"
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
               curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID"
               echo "file_updated=true" >> $GITHUB_OUTPUT
             fi
           fi
 
-      - name: 发送 TableRow.jsx 未更新通知
+      - name: 发送 TableRow.jsx 更新通知
         if: steps.check_file.outputs.file_updated == 'true'
         uses: candies404/Multi-Channel-Notifier@latest
         with:
