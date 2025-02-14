@@ -26,18 +26,22 @@ jobs:
           if [ -z "$ISSUE_INFO" ]; then
             echo "没有找到 'one-hub' 的 issue，写入当前 SHA 值到 issue"
             # 创建 issue，写入当前 SHA 值
-            JSON_DATA=$(jq -n --arg title "one-hub" --arg body "one-hub-update:$CURRENT_SHA" '{title: $title, body: $body}')
+            JSON_DATA=$(jq -n --arg title "one-hub" --arg body "one-hub-update:$CURRENT_SHA\n" '{title: $title, body: $body}')
             curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues"
             echo "file_updated=true" >> $GITHUB_OUTPUT
           else
             # 获取 issue 中的 SHA 值
-            ISSUE_SHA=$(echo "$ISSUE_INFO" | jq -r '.body' | grep -oP 'one-hub-update:\K\w+')
+            ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.body')
+            ISSUE_SHA=$(echo "$ISSUE_BODY" | grep -oP 'one-hub-update:\K\w+')
             
             if [ "$CURRENT_SHA" == "$ISSUE_SHA" ]; then
               echo "SHA 值一致，不更新"
               echo "file_updated=false" >> $GITHUB_OUTPUT
             else
               echo "SHA 值不一致，更新"
+              # 更新 issue 内容
+              NEW_BODY="$ISSUE_BODY\none-hub-update:$CURRENT_SHA"
+              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "{\"body\": \"$NEW_BODY\"}" "https://api.github.com/repos/${{ github.repository }}/issues/${{ fromJson(ISSUE_INFO).id }}"
               echo "file_updated=true" >> $GITHUB_OUTPUT
             fi
           fi
@@ -54,6 +58,8 @@ jobs:
       - name: one-hub 仓库未更新 执行退出
         if: steps.check.outputs.file_updated == 'false'
         run: exit 1
+
+
       - name: 检查 one-hub 仓库 TableRow.jsx 是否更新
         id: check_file
         run: |
@@ -70,13 +76,17 @@ jobs:
             echo "file_updated=true" >> $GITHUB_OUTPUT
           else
             # 获取 issue 中的 TableRow.jsx SHA 值
-            TABLE_ROW_ISSUE_SHA=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.body' | grep -oP 'TableRow.jsx-sha:\K\w+')
+            TABLE_ROW_ISSUE_BODY=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.body')
+            TABLE_ROW_ISSUE_SHA=$(echo "$TABLE_ROW_ISSUE_BODY" | grep -oP 'TableRow.jsx-sha:\K\w+')
             
             if [ "$CURRENT_TABLE_ROW_SHA" == "$TABLE_ROW_ISSUE_SHA" ]; then
               echo "TableRow.jsx SHA 值一致，不更新"
               echo "file_updated=false" >> $GITHUB_OUTPUT
             else
               echo "TableRow.jsx SHA 值不一致，更新"
+              # 更新 issue 内容
+              NEW_TABLE_ROW_BODY="$TABLE_ROW_ISSUE_BODY\nTableRow.jsx-sha:$CURRENT_TABLE_ROW_SHA"
+              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "{\"body\": \"$NEW_TABLE_ROW_BODY\"}" "https://api.github.com/repos/${{ github.repository }}/issues/${{ fromJson(TABLE_ROW_ISSUE_INFO).id }}"
               echo "file_updated=true" >> $GITHUB_OUTPUT
             fi
           fi
