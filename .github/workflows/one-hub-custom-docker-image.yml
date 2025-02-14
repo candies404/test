@@ -41,7 +41,7 @@ jobs:
           
           if [ "$(echo "$FILTERED_ISSUES" | jq 'length')" -eq 0 ]; then
             echo "##[debug]未找到现有issue，准备创建..."
-            BODY="one-hub-update:$MAIN_SHA"$'\n'"TableRow.jsx-sha:$TABLE_SHA"
+            BODY="one-hub-update:$MAIN_SHA"$'\n'"TableRow.jsx-sha:INIT"
             echo "新issue内容："
             echo "$BODY"
             JSON_DATA=$(jq -n --arg title "one-hub" --arg body "$BODY" '{title: $title, body: $body}')
