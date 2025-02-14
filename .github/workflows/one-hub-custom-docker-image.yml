@@ -29,7 +29,7 @@ jobs:
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
             echo "创建新 issue（初始化）"
             BODY="one-hub-update:$MAIN_SHA"$'\n'"TableRow.jsx-sha:$TABLE_SHA"
-            echo "构造的Issue内容："
+            echo "构造的Issue内容：⬇️"
             echo "$BODY"
             
             JSON_DATA=$(jq -n --arg title "one-hub" --arg body "$BODY" '{title: $title, body: $body}')
