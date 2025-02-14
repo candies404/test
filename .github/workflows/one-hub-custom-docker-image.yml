@@ -26,7 +26,6 @@ jobs:
           echo "TableRow.jsx 最新SHA: $TABLE_SHA"
           
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
-          echo "当前 issue 信息: $ISSUE_INFO"
           
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
             echo "创建新 issue（初始化）"
@@ -86,7 +85,7 @@ jobs:
           
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
           ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-          echo "当前 issue 内容: $ISSUE_BODY"
+          echo "当前 issue 内容: \n$ISSUE_BODY"
           
           # 精准替换TableRow行
           NEW_BODY=$(echo "$ISSUE_BODY" | sed "/^TableRow.jsx-sha:/c\TableRow.jsx-sha:$CURRENT_SHA")
