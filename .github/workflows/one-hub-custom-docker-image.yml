@@ -31,7 +31,8 @@ jobs:
             echo "file_updated=true" >> $GITHUB_OUTPUT
           else
             # 获取 issue 中的 SHA 值
-            ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.body')
+            ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].id')
+            ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
             ISSUE_SHA=$(echo "$ISSUE_BODY" | grep -oP 'one-hub-update:\K\w+')
             
             if [ "$CURRENT_SHA" == "$ISSUE_SHA" ]; then
@@ -41,10 +42,11 @@ jobs:
               echo "SHA 值不一致，更新"
               # 更新 issue 内容
               NEW_BODY="$ISSUE_BODY\none-hub-update:$CURRENT_SHA"
-              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "{\"body\": \"$NEW_BODY\"}" "https://api.github.com/repos/${{ github.repository }}/issues/${{ fromJson(ISSUE_INFO).id }}"
+              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "{\"body\": \"$NEW_BODY\"}" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID"
               echo "file_updated=true" >> $GITHUB_OUTPUT
             fi
           fi
+
       - name: 发送通知
         if: steps.check.outputs.file_updated == 'false'
         uses: candies404/Multi-Channel-Notifier@latest
@@ -58,7 +60,6 @@ jobs:
       - name: one-hub 仓库未更新 执行退出
         if: steps.check.outputs.file_updated == 'false'
         run: exit 1
-
 
       - name: 检查 one-hub 仓库 TableRow.jsx 是否更新
         id: check_file
@@ -76,7 +77,8 @@ jobs:
             echo "file_updated=true" >> $GITHUB_OUTPUT
           else
             # 获取 issue 中的 TableRow.jsx SHA 值
-            TABLE_ROW_ISSUE_BODY=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.body')
+            TABLE_ROW_ISSUE_ID=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.[0].id')
+            TABLE_ROW_ISSUE_BODY=$(echo "$TABLE_ROW_ISSUE_INFO" | jq -r '.[0].body')
             TABLE_ROW_ISSUE_SHA=$(echo "$TABLE_ROW_ISSUE_BODY" | grep -oP 'TableRow.jsx-sha:\K\w+')
             
             if [ "$CURRENT_TABLE_ROW_SHA" == "$TABLE_ROW_ISSUE_SHA" ]; then
@@ -86,7 +88,7 @@ jobs:
               echo "TableRow.jsx SHA 值不一致，更新"
               # 更新 issue 内容
               NEW_TABLE_ROW_BODY="$TABLE_ROW_ISSUE_BODY\nTableRow.jsx-sha:$CURRENT_TABLE_ROW_SHA"
-              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "{\"body\": \"$NEW_TABLE_ROW_BODY\"}" "https://api.github.com/repos/${{ github.repository }}/issues/${{ fromJson(TABLE_ROW_ISSUE_INFO).id }}"
+              curl -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "{\"body\": \"$NEW_TABLE_ROW_BODY\"}" "https://api.github.com/repos/${{ github.repository }}/issues/$TABLE_ROW_ISSUE_ID"
               echo "file_updated=true" >> $GITHUB_OUTPUT
             fi
           fi
