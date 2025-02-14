@@ -49,7 +49,7 @@ jobs:
             ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
             echo "当前 issue ID: $ISSUE_ID"
-            echo "当前 issue 内容:"
+            echo "当前 issue 内容:⬇️"
             echo "$ISSUE_BODY"
             
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
