@@ -16,13 +16,17 @@ jobs:
       - name: 检查one-hub仓库更新
         id: check_main
         run: |
+          echo "开始检查主仓库更新..."
           # 获取主仓库SHA
           MAIN_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
+          echo "主仓库最新SHA: $MAIN_SHA"
           
           # 初始化时需要同时获取TableRow SHA
           TABLE_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else "0000000" end' | cut -c1-7)
+          echo "TableRow.jsx 最新SHA: $TABLE_SHA"
           
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
+          echo "当前 issue 信息: $ISSUE_INFO"
           
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
             echo "创建新 issue（初始化）"
@@ -34,6 +38,8 @@ jobs:
           else
             ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
+            echo "当前 issue ID: $ISSUE_ID"
+            echo "当前 issue 内容: $ISSUE_BODY"
             
             # 只更新主仓库行
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
@@ -65,37 +71,39 @@ jobs:
       - name: 检查TableRow更新
         id: check_table
         run: |
-            # 重新获取最新TableRow SHA（确保时效性）
-            CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
-            
-            if [ -z "$CURRENT_SHA" ]; then
+          echo "开始检查 TableRow 更新..."
+          # 重新获取最新TableRow SHA（确保时效性）
+          CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
+          echo "TableRow.jsx 最新SHA: $CURRENT_SHA"
+          
+          if [ -z "$CURRENT_SHA" ]; then
             echo "::error::无法获取TableRow SHA值"
             exit 1
-            fi
-            
-            # 设置current_sha输出变量
-            echo "current_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
-            
-            ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
-            ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-            
-            # 精准替换TableRow行
-            NEW_BODY=$(echo "$ISSUE_BODY" | sed "/^TableRow.jsx-sha:/c\TableRow.jsx-sha:$CURRENT_SHA")
-            
-            if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
+          fi
+          
+          # 设置current_sha输出变量
+          echo "current_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
+          
+          ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
+          ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
+          echo "当前 issue 内容: $ISSUE_BODY"
+          
+          # 精准替换TableRow行
+          NEW_BODY=$(echo "$ISSUE_BODY" | sed "/^TableRow.jsx-sha:/c\TableRow.jsx-sha:$CURRENT_SHA")
+          
+          if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
             echo "TableRow SHA更新"
             echo "更新前：$ISSUE_BODY"
             echo "更新后：$NEW_BODY"
             JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
             # 静默模式执行curl并抑制输出
             curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$(echo "$ISSUE_INFO" | jq -r '.[0].number')" > /dev/null
+              -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$(echo "$ISSUE_INFO" | jq -r '.[0].number')" > /dev/null
             echo "table_updated=true" >> $GITHUB_OUTPUT
-            else
+          else
             echo "TableRow未更新"
             echo "table_updated=false" >> $GITHUB_OUTPUT
-            fi
-
+          fi
 
       - name: 发送TableRow通知
         if: steps.check_table.outputs.table_updated == 'true'
