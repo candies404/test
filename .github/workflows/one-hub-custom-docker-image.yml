@@ -20,11 +20,7 @@ jobs:
           # 获取主仓库SHA
           MAIN_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
           echo "主仓库最新SHA: $MAIN_SHA"
-          
-          # 初始化时需要同时获取TableRow SHA
-          TABLE_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else "0000000" end' | cut -c1-7)
-          echo "TableRow.jsx 最新SHA: $TABLE_SHA"
-          
+                    
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
           
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
@@ -38,7 +34,8 @@ jobs:
             ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
             echo "当前 issue ID: $ISSUE_ID"
-            echo "当前 issue 内容: $ISSUE_BODY"
+            echo "当前 issue 内容:"
+            echo "$ISSUE_BODY"
             
             # 只更新主仓库行
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
@@ -46,7 +43,7 @@ jobs:
             if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
               echo "主仓库SHA更新"
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
-              curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID"
+              curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID" > /dev/null
               echo "main_updated=true" >> $GITHUB_OUTPUT
             else
               echo "主仓库未更新"
@@ -85,7 +82,8 @@ jobs:
           
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
           ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-          echo "当前 issue 内容: \n$ISSUE_BODY"
+          echo "当前 issue 内容:"
+          echo "$ISSUE_BODY"
           
           # 精准替换TableRow行
           NEW_BODY=$(echo "$ISSUE_BODY" | sed "/^TableRow.jsx-sha:/c\TableRow.jsx-sha:$CURRENT_SHA")
