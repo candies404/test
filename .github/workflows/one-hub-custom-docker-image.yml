@@ -67,7 +67,7 @@ jobs:
             echo "未找到 Issue，重试 $i/3..."
             sleep $((i*2))
           done
-
+      
           # 构建 Issue 内容
           echo "构建 Issue 内容..."
           issue_body=$(jq -n \
@@ -93,15 +93,22 @@ jobs:
           else
             echo "=== 更新现有 Issue ==="
             issue_id=$(jq -r '.[0].number' <<< "$issues")
-            existing_body=$(jq -r '.[0].body' <<< "$issues" | jq fromjson)
+            existing_body=$(jq -r '.[0].body' <<< "$issues")
             echo "现有 Issue ID: $issue_id"
             echo "现有 Issue 内容: $existing_body"
-
+      
+            # 解析现有 Issue 内容
+            existing_data=$(echo "$existing_body" | jq fromjson)
+            if [ $? -ne 0 ]; then
+              echo "::error::无法解析现有 Issue 内容"
+              exit 1
+            fi
+      
             # 比较逻辑
-            if [ "$(jq -r '.repo_sha' <<< "$existing_body")" != "${{ env.MAIN_SHA }}" ] || \
-               [ "$(jq -r '.timestamp' <<< "$existing_body")" != "${{ env.MAIN_TIMESTAMP }}" ]; then
+            if [ "$(jq -r '.repo_sha' <<< "$existing_data")" != "${{ env.MAIN_SHA }}" ] || \
+               [ "$(jq -r '.timestamp' <<< "$existing_data")" != "${{ env.MAIN_TIMESTAMP }}" ]; then
               echo "🔄 检测到更新："
-              echo "  旧值: $(jq <<< "$existing_body")"
+              echo "  旧值: $(jq <<< "$existing_data")"
               echo "  新值: repo_sha=${{ env.MAIN_SHA }}, TableRow_file_sha=${{ env.TABLE_SHA }}, ts=${{ env.MAIN_TIMESTAMP }}"
               
               # 更新 Issue
