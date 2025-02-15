@@ -15,34 +15,68 @@ jobs:
       issues: write
     env:
       TZ: Asia/Shanghai
+
     steps:
       - name: 检查主仓库更新
         id: check_main
         run: |
-          # 原有检查逻辑保持不变
-          echo "开始检查 one-hub 仓库更新..."
+          echo "=== 开始检查 one-hub 仓库更新 ==="
           MAIN_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
-          TABLE_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
+          echo "主仓库最新 SHA: $MAIN_SHA"
           
-          # 原有 Issue 处理逻辑保持不变
+          TABLE_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
+          echo "TableRow.jsx 最新 SHA: $TABLE_SHA"
+          
+          echo "=== 检查 Issue 状态 ==="
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
+          echo "当前 Issue 信息: $ISSUE_INFO"
           
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
-            BODY="one-hub-update:$MAIN_SHA"$'\n'"TableRow.jsx-sha:$TABLE_SHA"
+            echo "=== 创建新 Issue ==="
+            BODY="one-hub-update:$MAIN_SHA"\n'"TableRow.jsx-sha:$TABLE_SHA"
+            echo "Issue 内容: $BODY"
+            
             JSON_DATA=$(jq -n --arg title "one-hub" --arg body "$BODY" '{title: $title, body: $body}')
-            curl -sS -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues"
+            echo "发送的 JSON 数据: $JSON_DATA"
+            
+            RESPONSE=$(curl -sS -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues")
+            echo "Issue 创建响应: $RESPONSE"
+            
             echo "main_updated=true" >> $GITHUB_OUTPUT
           else
-            # 原有更新判断逻辑保持不变
+            echo "=== 更新现有 Issue ==="
+            ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
+            echo "当前 Issue ID: $ISSUE_ID"
+            echo "当前 Issue 内容: $ISSUE_BODY"
+            
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
+            echo "更新后的 Issue 内容: $NEW_BODY"
+            
             if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
+              echo "=== 检测到主仓库更新 ==="
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
+              echo "发送的 JSON 数据: $JSON_DATA"
+              
               curl_response=$(curl -sS -w "\n%{http_code}" -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$(echo "$ISSUE_INFO" | jq -r '.[0].number')")
+                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID")
+              http_code=$(echo "$curl_response" | tail -n1)
+              body=$(echo "$curl_response" | sed '$d')
+              
+              echo "HTTP 状态码: $http_code"
+              echo "响应内容: $body"
+              
+              if [ "$http_code" -ne 200 ]; then
+                echo "::error::更新 Issue 失败"
+                exit 1
+              else
+                echo "Issue 更新成功"
+              fi
+              
               echo "main_updated=true" >> $GITHUB_OUTPUT
             else
+              echo "=== 主仓库未更新 ==="
               echo "main_updated=false" >> $GITHUB_OUTPUT
             fi
           fi
@@ -51,24 +85,34 @@ jobs:
         id: check_table
         if: steps.check_main.outputs.main_updated == 'true'
         run: |
-          # 原有 TableRow 检查逻辑保持不变
+          echo "=== 开始检查 TableRow 更新 ==="
           CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
+          echo "TableRow.jsx 最新 SHA: $CURRENT_SHA"
+          
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
           ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
+          echo "当前 Issue 内容: $ISSUE_BODY"
+          
           NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^TableRow.jsx-sha:.*/TableRow.jsx-sha:$CURRENT_SHA/")
+          echo "更新后的 Issue 内容: $NEW_BODY"
           
           if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
+            echo "=== 检测到 TableRow 更新 ==="
             echo "table_file_updated=true" >> $GITHUB_OUTPUT
           else
+            echo "=== TableRow 未更新 ==="
             echo "table_file_updated=false" >> $GITHUB_OUTPUT
           fi
 
       - name: 最终检查
         id: final_check
         run: |
+          echo "=== 最终检查 ==="
           if [[ "${{ steps.check_main.outputs.main_updated }}" == "true" ]]; then
+            echo "需要执行构建"
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
+            echo "无需构建"
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
 
@@ -88,13 +132,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai
+
     steps:
-      # 以下步骤保持原有逻辑不变
       - name: 检出 MartialBE/one-hub
         uses: actions/checkout@v4
         with:
           repository: MartialBE/one-hub
-          path: ""  # 在根目录
+          path: ""
 
       - name: 检出源仓库
         uses: actions/checkout@v4
