@@ -75,12 +75,12 @@ jobs:
             --arg table "${{ env.TABLE_SHA }}" \
             --arg ts "${{ env.MAIN_TIMESTAMP }}" \
             '{
-              main: $main,
-              table: $table,
+              repo_sha: $main,
+              TableRow_file_sha: $table,
               timestamp: $ts
             }')
-          echo "Issue 内容: $issue_body"
-
+          printf "Issue 内容:⬇️\n%s\n" "$issue_body"
+        
           if [ $(jq 'length' <<< "$issues") -eq 0 ]; then
             echo "=== 创建新 Issue ==="
             response=$(curl -fsS -X POST \
@@ -102,7 +102,7 @@ jobs:
                [ "$(jq -r '.timestamp' <<< "$existing_body")" != "${{ env.MAIN_TIMESTAMP }}" ]; then
               echo "🔄 检测到更新："
               echo "  旧值: $(jq <<< "$existing_body")"
-              echo "  新值: main=${{ env.MAIN_SHA }}, table=${{ env.TABLE_SHA }}, ts=${{ env.MAIN_TIMESTAMP }}"
+              echo "  新值: repo_sha=${{ env.MAIN_SHA }}, TableRow_file_sha=${{ env.TABLE_SHA }}, ts=${{ env.MAIN_TIMESTAMP }}"
               
               # 更新 Issue
               curl -fsS -X PATCH \
