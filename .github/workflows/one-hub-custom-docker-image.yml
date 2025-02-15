@@ -28,7 +28,7 @@ jobs:
 
           echo "=== 检查 Issue 状态 ==="
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
-          echo "当前 Issue 信息: $ISSUE_INFO"
+          # echo "当前 Issue 信息: $ISSUE_INFO"
 
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
             echo "=== 创建新 Issue ==="
@@ -63,8 +63,8 @@ jobs:
               http_code=$(echo "$curl_response" | tail -n1)
               body=$(echo "$curl_response" | sed '$d')
 
-              echo "HTTP 状态码: $http_code"
-              echo "响应内容: $body"
+              # echo "HTTP 状态码: $http_code"
+              # echo "响应内容: $body"
 
               if [ "$http_code" -ne 200 ]; then
                 echo "::error::更新 Issue 失败"
