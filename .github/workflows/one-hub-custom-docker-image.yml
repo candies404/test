@@ -41,7 +41,7 @@ jobs:
               exit 1
             else
               echo "Issue创建成功"
-              ISSUE_BODY="$BODY"  # 直接使用构造的内容
+              ISSUE_BODY="$BODY"
             fi
             
             echo "main_updated=true" >> $GITHUB_OUTPUT
@@ -54,11 +54,28 @@ jobs:
             
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
             
+            echo "替换后的新内容:"
+            echo "$NEW_BODY"
+            
             if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
               echo "one-hub 仓库SHA更新"
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
-              curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID" > /dev/null
+              echo "发送的JSON数据: $JSON_DATA"
+              
+              # 执行PATCH请求并检查响应
+              curl_response=$(curl -sS -w "\n%{http_code}" -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID")
+              http_code=$(echo "$curl_response" | tail -n1)
+              body=$(echo "$curl_response" | sed '$d')
+              
+              if [ "$http_code" -ne 200 ]; then
+                echo "::error::更新issue失败，HTTP状态码: $http_code"
+                echo "响应内容: $body"
+                exit 1
+              else
+                echo "Issue更新成功"
+              fi
+              
               echo "main_updated=true" >> $GITHUB_OUTPUT
             else
               echo "one-hub 仓库未更新"
