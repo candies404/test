@@ -133,7 +133,7 @@ jobs:
         uses: candies404/Multi-Channel-Notifier@latest
         with:
           title: "TableRow组件更新"
-          content: "检测到新版本，SHA：${{ steps.check_table.outputs.current_sha }}"
+          content: "检测到新版本，点击查看：[TableRow.jsx](https://github.com/MartialBE/one-hub/blob/${{ steps.check_table.outputs.current_sha }}/web/src/views/Channel/component/TableRow.jsx)"
           hitokoto: 'false'
           wpush_key : ${{ secrets.WPUSH_KEY }}
 
