@@ -94,10 +94,10 @@ jobs:
 
       - name: one-hub 仓库未更新退出
         if: steps.check_main.outputs.main_updated == 'false'
-        run: exit 1
+        run: exit 0
 
       - name: 检查TableRow更新
-        id: check_table
+        id: check_TableRow_file
         run: |
           echo "开始检查 TableRow 更新..."
           CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
@@ -122,21 +122,123 @@ jobs:
             JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
             curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$(echo "$ISSUE_INFO" | jq -r '.[0].number')" > /dev/null
-            echo "table_updated=true" >> $GITHUB_OUTPUT
+            echo "table_file_updated=true" >> $GITHUB_OUTPUT
           else
             echo "TableRow未更新"
-            echo "table_updated=false" >> $GITHUB_OUTPUT
+            echo "table_file_updated=false" >> $GITHUB_OUTPUT
           fi
 
       - name: 发送TableRow通知
-        if: steps.check_table.outputs.table_updated == 'true'
+        if: steps.check_TableRow_file.outputs.table_file_updated == 'true'
         uses: candies404/Multi-Channel-Notifier@latest
         with:
           title: "TableRow组件更新"
-          content: "检测到新版本，点击查看：[TableRow.jsx](https://github.com/MartialBE/one-hub/blob/${{ steps.check_table.outputs.current_sha }}/web/src/views/Channel/component/TableRow.jsx)"
+          content: "检测到新版本，点击查看：[TableRow.jsx](https://github.com/MartialBE/one-hub/blob/main/web/src/views/Channel/component/TableRow.jsx)"
           hitokoto: 'false'
           wpush_key : ${{ secrets.WPUSH_KEY }}
 
-      # - name: 如果文件没有更新则退出
-      #   if: steps.check_file.outputs.file_updated == 'false'
-      #   run: exit 1
+
+      - name: 检出 MartialBE/one-hub 目标仓库
+        uses: actions/checkout@v4
+        with:
+          repository: MartialBE/one-hub
+          path: ""  # 在根目录
+
+      - name: 检出源仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          path: source-repo  # 检出源仓库到 source-repo 目录
+
+      - name: 保存版本信息
+        run: |
+          HASH=$(git rev-parse --short=7 HEAD)
+          echo "dev-$HASH" > VERSION
+          cat VERSION
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.4.1
+
+      - name: 缓存 Node 模块
+        uses: actions/cache@v4
+        with:
+          path: |
+            web/node_modules
+            ~/.cache/yarn
+          key: ${{ runner.os }}-node-${{ hashFiles('web/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: 构建前端，删除了官网按钮
+        env:
+          CI: ""
+        run: |
+          ls -la  # 查看当前目录
+          ls -la source-repo/  # 查看源仓库目录内容
+          export VERSION=$(cat VERSION)
+          cp source-repo/one-hub/TableRow.jsx web/src/views/Channel/component/TableRow.jsx
+          cd web
+          yarn install
+          VITE_APP_VERSION=$VERSION yarn run build
+
+      - name: 设置 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.18.0"
+
+      # - name: 缓存 Go 模块
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: |
+      #       ~/go/pkg/mod
+      #       ~/.cache/go-build
+      #     key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-go-
+
+      - name: 编译后端 (amd64)
+        run: |
+          go mod download
+          go build -ldflags "-s -w -X 'one-api/common/config.Version=$(cat VERSION)' -extldflags '-static'" -o one-api-amd64
+
+      - name: 编译后端 (arm64)
+        run: |
+          sudo rm /etc/apt/sources.list.d/microsoft-prod.list
+          sudo apt-get update
+          sudo apt-get install gcc-aarch64-linux-gnu
+          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X 'one-api/common/config.Version=$(cat VERSION)' -extldflags '-static'" -o one-api-arm64
+
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker 元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/one-hub
+          tags: |
+            type=raw,value=latest
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          file: Dockerfile-action
