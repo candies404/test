@@ -40,7 +40,7 @@ jobs:
 
             RESPONSE=$(curl -sS -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues")
-            echo "Issue 创建响应: $RESPONSE"
+            # echo "Issue 创建响应: $RESPONSE"
 
             echo "main_updated=true" >> $GITHUB_OUTPUT
           else
