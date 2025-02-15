@@ -53,10 +53,7 @@ jobs:
             echo "$ISSUE_BODY"
             
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
-            
-            echo "替换后的新内容:"
-            echo "$NEW_BODY"
-            
+                        
             if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
               echo "one-hub 仓库SHA更新"
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
