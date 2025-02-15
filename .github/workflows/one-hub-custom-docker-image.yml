@@ -98,7 +98,7 @@ jobs:
             echo "现有 Issue 内容: $existing_body"
 
             # 比较逻辑
-            if [ "$(jq -r '.main' <<< "$existing_body")" != "${{ env.MAIN_SHA }}" ] || \
+            if [ "$(jq -r '.repo_sha' <<< "$existing_body")" != "${{ env.MAIN_SHA }}" ] || \
                [ "$(jq -r '.timestamp' <<< "$existing_body")" != "${{ env.MAIN_TIMESTAMP }}" ]; then
               echo "🔄 检测到更新："
               echo "  旧值: $(jq <<< "$existing_body")"
