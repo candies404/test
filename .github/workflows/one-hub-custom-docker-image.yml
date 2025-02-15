@@ -120,7 +120,7 @@ jobs:
               
               echo "main_updated=true" >> $GITHUB_OUTPUT
             else
-              echo "✅ 无更新需要同步"
+              echo "✅ one-hub 仓库未更新"
               echo "main_updated=false" >> $GITHUB_OUTPUT
             fi
           fi
