@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MartialBE/one-hub
-          path: main-repo
+          path: ""  # 在根目录
 
       - name: 检出源仓库
         uses: actions/checkout@v4
