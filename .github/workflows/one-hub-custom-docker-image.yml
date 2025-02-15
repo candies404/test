@@ -5,7 +5,7 @@ on:
 
 jobs:
   check-updates:
-    name: 更新检查
+    name: 原子化更新检查
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.final_check.outputs.should_build }}
@@ -13,105 +13,158 @@ jobs:
     continue-on-error: true
     permissions:
       issues: write
+      contents: read
     env:
       TZ: Asia/Shanghai
+      RETRY_COUNT: 3  # API 重试次数
+      RETRY_DELAY: 2  # 重试基础等待时间（秒）
+
     steps:
-      - name: 检查主仓库更新
-        id: check_main
+      # ========== 原子化数据获取 ==========
+      - name: 获取仓库快照
+        id: repo_snapshot
         run: |
-          echo "=== 开始检查 one-hub 仓库更新 ==="
-          MAIN_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
-          echo "主仓库最新 SHA: $MAIN_SHA"
+          # 获取主仓库最新提交（包含完整时间戳）
+          main_commit=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits/main")
+          main_sha=$(jq -r '.sha[0:7]' <<< "$main_commit")
+          main_timestamp=$(jq -r '.commit.committer.date' <<< "$main_commit")
+          
+          # 获取 TableRow 的历史版本（确保与主仓库时间点一致）
+          table_commit=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&until=$main_timestamp")
+          table_sha=$(jq -r 'if length>0 then .[0].sha[0:7] else "null" end' <<< "$table_commit")
+          
+          # 存储环境变量（后续步骤使用）
+          echo "SNAPSHOT_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "MAIN_SHA=$main_sha" >> $GITHUB_ENV
+          echo "MAIN_TIMESTAMP=$main_timestamp" >> $GITHUB_ENV
+          echo "TABLE_SHA=$table_sha" >> $GITHUB_ENV
+          
+          echo "🔄 仓库快照："
+          echo "  主仓库: $main_sha (时间: $main_timestamp)"
+          echo "  TableRow: $table_sha"
 
-          TABLE_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
-          echo "TableRow.jsx 最新 SHA: $TABLE_SHA"
+      # ========== Issue 管理 ==========
+      - name: 管理追踪 Issue
+        id: issue_manager
+        env:
+          ISSUE_TITLE: "one-hub-tracker"
+        run: |
+          # 带重试的 Issue 查询函数
+          fetch_issue() {
+            for ((i=1; i<=$RETRY_COUNT; i++)); do
+              response=$(curl -fsS "https://api.github.com/repos/${{ github.repository }}/issues?state=open&filter=created")
+              issues=$(jq -r --arg title "$ISSUE_TITLE" '[.[] | select(.title == $title)]' <<< "$response")
+              
+              if [ $(jq 'length' <<< "$issues") -gt 0 ]; then
+                echo "$issues"
+                return 0
+              fi
+              
+              sleep $(($RETRY_DELAY * $i))
+            done
+            echo "[]"
+          }
 
-          echo "=== 检查 Issue 状态 ==="
-          ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
-          # echo "当前 Issue 信息: $ISSUE_INFO"
+          # 序列化 Issue 内容
+          serialize_body() {
+            jq -n \
+              --arg main "${{ env.MAIN_SHA }}" \
+              --arg table "${{ env.TABLE_SHA }}" \
+              --arg ts "${{ env.MAIN_TIMESTAMP }}" \
+              --arg snapshot "${{ env.SNAPSHOT_TIME }}" \
+              '{ 
+                metadata: {
+                  version: "v2",
+                  snapshot: $snapshot
+                },
+                data: {
+                  main: $main,
+                  table: $table,
+                  timestamp: $ts
+                }
+              }' | base64 -w0
+          }
 
-          if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
-            echo "=== 创建新 Issue ==="
-            BODY="one-hub-update:$MAIN_SHA"$'\n'"TableRow.jsx-sha:$TABLE_SHA"
-            echo "Issue 内容: $BODY"
+          # 反序列化函数
+          deserialize_body() {
+            base64 -d <<< "$1" | jq -r '.data'
+          }
 
-            JSON_DATA=$(jq -n --arg title "one-hub" --arg body "$BODY" '{title: $title, body: $body}')
-            echo "发送的 JSON 数据: $JSON_DATA"
-
-            RESPONSE=$(curl -sS -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues")
-            # echo "Issue 创建响应: $RESPONSE"
-
+          # 获取或创建 Issue
+          issue_data=$(fetch_issue)
+          if [ $(jq 'length' <<< "$issue_data") -eq 0 ]; then
+            echo "🆕 创建新追踪 Issue"
+            body=$(serialize_body)
+            response=$(curl -fsS -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg title "$ISSUE_TITLE" --arg body "$body" '{title: $title, body: $body}')" \
+              "https://api.github.com/repos/${{ github.repository }}/issues")
+            
+            echo "✅ 已创建 Issue: $(jq -r '.html_url' <<< "$response")"
             echo "main_updated=true" >> $GITHUB_OUTPUT
           else
-            echo "=== 更新现有 Issue ==="
-            ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
-            ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-            echo "当前 Issue ID: $ISSUE_ID"
-            printf "当前 Issue 内容:\n%s\n" "$ISSUE_BODY"
-
-            NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
-            printf "更新后的 Issue 内容:\n%s\n" "$NEW_BODY"
-
-            if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
-              echo "=== 检测到主仓库更新 ==="
-              JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
-              echo "发送的 JSON 数据: $JSON_DATA"
-
-              curl_response=$(curl -sS -w "\n%{http_code}" -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID")
-              http_code=$(echo "$curl_response" | tail -n1)
-              body=$(echo "$curl_response" | sed '$d')
-
-              # echo "HTTP 状态码: $http_code"
-              # echo "响应内容: $body"
-
-              if [ "$http_code" -ne 200 ]; then
-                echo "::error::更新 Issue 失败"
-                exit 1
-              else
-                echo "Issue 更新成功"
-              fi
-
+            echo "🔍 发现现有追踪 Issue"
+            issue_number=$(jq -r '.[0].number' <<< "$issue_data")
+            current_body=$(jq -r '.[0].body' <<< "$issue_data")
+            current_data=$(deserialize_body "$current_body")
+            
+            # 比较逻辑（同时校验时间戳）
+            new_body=$(serialize_body)
+            if [ "$current_body" != "$new_body" ] || \
+               [ "$(jq -r '.data.main' <<< "$current_data")" != "${{ env.MAIN_SHA }}" ] || \
+               [ "$(jq -r '.data.timestamp' <<< "$current_data")" != "${{ env.MAIN_TIMESTAMP }}" ]; then
+              echo "🔄 检测到更新："
+              echo "  旧值: $(jq <<< "$current_data")"
+              echo "  新值: main=${{ env.MAIN_SHA }}, table=${{ env.TABLE_SHA }}, ts=${{ env.MAIN_TIMESTAMP }}"
+              
+              # 更新 Issue
+              curl -fsS -X PATCH \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg body "$new_body" '{body: $body}')" \
+                "https://api.github.com/repos/${{ github.repository }}/issues/$issue_number"
+              
               echo "main_updated=true" >> $GITHUB_OUTPUT
             else
-              echo "=== 主仓库未更新 ==="
+              echo "✅ 无更新需要同步"
               echo "main_updated=false" >> $GITHUB_OUTPUT
             fi
           fi
 
-      - name: 检查TableRow更新
+      # ========== TableRow 检查 ==========
+      - name: 检查组件更新
         id: check_table
-        if: steps.check_main.outputs.main_updated == 'true'
+        if: steps.issue_manager.outputs.main_updated == 'true'
         run: |
-          echo "=== 开始检查 TableRow 更新 ==="
-          CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
-          echo "TableRow.jsx 最新 SHA: $CURRENT_SHA"
-
-          ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
-          ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-          printf "当前 Issue 内容:\n%s\n" "$ISSUE_BODY"
-
-          NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^TableRow.jsx-sha:.*/TableRow.jsx-sha:$CURRENT_SHA/")
-          printf "更新后的 Issue 内容:\n%s\n" "$NEW_BODY"
-
-          if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
-            echo "=== 检测到 TableRow 更新 ==="
+          # 始终使用原子化快照中的初始值
+          initial_sha="${{ env.TABLE_SHA }}"
+          
+          # 获取当前最新 SHA（带缓存破坏参数）
+          current_sha=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&_=$(date +%s)" | 
+            jq -r 'if length>0 then .[0].sha[0:7] else "null" end')
+          
+          echo "🔄 TableRow 版本检查："
+          echo "  初始值: $initial_sha (来自快照 ${{ env.SNAPSHOT_TIME }})"
+          echo "  当前值: $current_sha"
+          
+          if [ "$current_sha" != "$initial_sha" ] && [ "$initial_sha" != "null" ]; then
+            echo "🚨 检测到 TableRow 更新"
             echo "table_file_updated=true" >> $GITHUB_OUTPUT
           else
-            echo "=== TableRow 未更新 ==="
+            echo "✅ 无组件更新"
             echo "table_file_updated=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 最终检查
+      # ========== 最终检查 ==========
+      - name: 构建决策
         id: final_check
         run: |
-          echo "=== 最终检查 ==="
-          if [[ "${{ steps.check_main.outputs.main_updated }}" == "true" ]]; then
-            echo "需要执行构建"
+          if [[ "${{ steps.issue_manager.outputs.main_updated }}" == "true" ]]; then
+            echo "📦 需要执行构建"
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
-            echo "无需构建"
+            echo "⏸️ 跳过构建"
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
 
