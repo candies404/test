@@ -51,7 +51,7 @@ jobs:
             printf "当前 Issue 内容:\n%s\n" "$ISSUE_BODY"
 
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
-            echo "更新后的 Issue 内容: $NEW_BODY"
+            printf "更新后的 Issue 内容:\n%s\n" "$NEW_BODY"
 
             if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
               echo "=== 检测到主仓库更新 ==="
@@ -93,7 +93,7 @@ jobs:
           printf "当前 Issue 内容:\n%s\n" "$ISSUE_BODY"
 
           NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^TableRow.jsx-sha:.*/TableRow.jsx-sha:$CURRENT_SHA/")
-          echo "更新后的 Issue 内容: $NEW_BODY"
+          printf "更新后的 Issue 内容:\n%s\n" "$NEW_BODY"
 
           if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
             echo "=== 检测到 TableRow 更新 ==="
