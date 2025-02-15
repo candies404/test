@@ -1,4 +1,4 @@
-name: one-hub 前端修改优化版
+name: one-hub 前端修改
 
 on:
   workflow_dispatch:
@@ -7,182 +7,151 @@ jobs:
   check-updates:
     name: 更新检查
     runs-on: ubuntu-latest
+    continue-on-error: true
     env:
       TZ: Asia/Shanghai
     permissions:
       issues: write
     outputs:
-      should_build: ${{ steps.check_main.outputs.main_updated }}
-      table_updated: ${{ steps.check_table.outputs.table_updated }}
+      build_required: ${{ steps.check_main.outputs.main_updated }}
+      table_updated: ${{ steps.check_TableRow_file.outputs.table_file_updated }}
+      main_sha: ${{ steps.check_main.outputs.main_sha }}
+      table_sha: ${{ steps.check_TableRow_file.outputs.current_sha }}
+
     steps:
-      - name: 检查one-hub仓库更新
+      - name: 检查 one-hub 仓库更新
         id: check_main
         run: |
-          echo "::group::主仓库更新检查"
+          echo "开始检查 one-hub 仓库更新..."
           MAIN_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits/main" | jq -r '.sha' | cut -c1-7)
-          echo "最新主分支SHA: $MAIN_SHA"
-
-          TABLE_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r 'if length > 0 then .[0].sha else empty end' | cut -c1-7)
-          echo "TableRow组件最新SHA: $TABLE_SHA"
+          echo "main_sha=$MAIN_SHA" >> $GITHUB_OUTPUT
           
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
-
+          
           if [ "$(echo "$ISSUE_INFO" | jq 'length')" -eq 0 ]; then
-            echo "未发现issue，创建新issue..."
-            BODY="one-hub-update:$MAIN_SHA"$'\n'"TableRow.jsx-sha:$TABLE_SHA"
-            
+            BODY="one-hub-update:$MAIN_SHA\nTableRow.jsx-sha:placeholder"
             JSON_DATA=$(jq -n --arg title "one-hub" --arg body "$BODY" '{title: $title, body: $body}')
             curl -sS -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues"
-            
             echo "main_updated=true" >> $GITHUB_OUTPUT
           else
-            ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-            echo "当前issue #$ISSUE_ID 内容: $(echo "$ISSUE_BODY" | head -n1)"
+            CURRENT_SHA=$(echo "$ISSUE_BODY" | grep -oP 'one-hub-update:\K\w+')
             
-            NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/one-hub-update:.*/one-hub-update:$MAIN_SHA/")
-            if [ "$ISSUE_BODY" != "$NEW_BODY" ]; then
-              echo "检测到主仓库更新，更新issue..."
+            if [ "$MAIN_SHA" != "$CURRENT_SHA" ]; then
+              NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/one-hub-update:.*/one-hub-update:$MAIN_SHA/")
               JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
               curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_ID"
+                -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$(echo "$ISSUE_INFO" | jq -r '.[0].number')"
               echo "main_updated=true" >> $GITHUB_OUTPUT
             else
-              echo "未检测到主仓库更新"
               echo "main_updated=false" >> $GITHUB_OUTPUT
             fi
           fi
-          echo "::endgroup::"
 
-      - name: 检查TableRow更新
-        id: check_table
-        if: steps.check_main.outputs.main_updated == 'true'
+      - name: 检查 TableRow 更新
+        id: check_TableRow_file
         run: |
-          echo "::group::TableRow组件差异检查"
           CURRENT_SHA=$(curl -s "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx" | jq -r '.[0].sha' | cut -c1-7)
+          echo "current_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
           
-          # 获取issue中的记录SHA
-          ISSUE_BODY=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues/$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")][0].number')" | jq -r '.body')
-          RECORD_SHA=$(echo "$ISSUE_BODY" | grep 'TableRow.jsx-sha:' | cut -d: -f2 | tr -d '[:space:]')
-
-          if [ "$CURRENT_SHA" != "$RECORD_SHA" ]; then
-            echo "检测到TableRow组件更新($RECORD_SHA → $CURRENT_SHA)"
-            echo "table_updated=true" >> $GITHUB_OUTPUT
+          ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
+          ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
+          OLD_SHA=$(echo "$ISSUE_BODY" | grep -oP 'TableRow.jsx-sha:\K\w+')
+          
+          if [ "$CURRENT_SHA" != "$OLD_SHA" ]; then
+            NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/TableRow.jsx-sha:.*/TableRow.jsx-sha:$CURRENT_SHA/")
+            JSON_DATA=$(jq -n --arg body "$NEW_BODY" '{body: $body}')
+            curl -sS -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -d "$JSON_DATA" "https://api.github.com/repos/${{ github.repository }}/issues/$(echo "$ISSUE_INFO" | jq -r '.[0].number')"
+            echo "table_file_updated=true" >> $GITHUB_OUTPUT
           else
-            echo "TableRow组件无更新"
-            echo "table_updated=false" >> $GITHUB_OUTPUT
+            echo "table_file_updated=false" >> $GITHUB_OUTPUT
           fi
-          echo "::endgroup::"
 
-      - name: 发送TableRow通知
-        if: steps.check_main.outputs.main_updated == 'true' && steps.check_table.outputs.table_updated == 'true'
+      - name: 发送 TableRow 通知
+        if: steps.check_TableRow_file.outputs.table_file_updated == 'true'
         uses: candies404/Multi-Channel-Notifier@latest
         with:
-          title: "【组件更新】TableRow.jsx"
-          content: |
-            检测到新版本更新哈希：${{ steps.check_main.outputs.table_sha }}
-            更新内容查看：
-            https://github.com/MartialBE/one-hub/blob/main/web/src/views/Channel/component/TableRow.jsx
+          title: "TableRow 组件更新"
+          content: "检测到新版本，点击查看：[TableRow.jsx](https://github.com/MartialBE/one-hub/blob/main/web/src/views/Channel/component/TableRow.jsx)"
           hitokoto: 'false'
           wpush_key: ${{ secrets.WPUSH_KEY }}
 
-  build-and-deploy:
+  build-deploy:
     name: 构建部署
     needs: check-updates
-    if: ${{ needs.check-updates.outputs.should_build == 'true' }}
+    if: ${{ needs.check-updates.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      - name: 检出主仓库
+      - name: 检出 one-hub 仓库
         uses: actions/checkout@v4
         with:
           repository: MartialBE/one-hub
-          path: .
+          ref: main
+          path: main-repo
 
-      - name: 检出自定义仓库
+      - name: 检出定制仓库
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
           path: custom-repo
 
-      - name: 准备构建环境
+      - name: 同步定制组件
         run: |
-          echo "::group::环境准备"
-          cp custom-repo/one-hub/TableRow.jsx web/src/views/Channel/component/
-          HASH=$(git rev-parse --short=7 HEAD)
-          echo "构建版本: dev-$HASH"
-          echo "dev-$HASH" > VERSION
-          echo "::endgroup::"
+          cp custom-repo/one-hub/TableRow.jsx main-repo/web/src/views/Channel/component/TableRow.jsx
+          echo "组件替换完成"
 
-      - name: 设置Node.js环境
+      - name: 设置 Node.js 环境
         uses: actions/setup-node@v4
         with:
           node-version: 22.4.1
           cache: 'yarn'
 
       - name: 构建前端
+        working-directory: ./main-repo/web
         run: |
-          echo "::group::前端构建日志"
-          cd web
-          yarn install --frozen-lockfile
-          VITE_APP_VERSION=$(cat ../VERSION) yarn build
-          echo "::endgroup::"
+          yarn install
+          VITE_APP_VERSION=dev-${{ needs.check-updates.outputs.main_sha }} yarn build
+          echo "前端构建完成"
 
-      - name: 设置Go环境
+      - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
-          go-version: '^1.20'
+          go-version: ">=1.18.0"
 
-      - name: 编译多平台二进制
+      - name: 交叉编译
+        working-directory: ./main-repo
         run: |
-          echo "::group::编译日志"
-          # AMD64
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X 'one-api/common/config.Version=$(cat VERSION)'" -o one-api-amd64
+          export GOARCH=amd64
+          go build -ldflags "-X 'one-api/common/config.Version=dev-${{ needs.check-updates.outputs.main_sha }}'" -o one-api-amd64
           
-          # ARM64
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X 'one-api/common/config.Version=$(cat VERSION)'" -o one-api-arm64
-          echo "::endgroup::"
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          export GOARCH=arm64 CC=aarch64-linux-gnu-gcc
+          go build -ldflags "-X 'one-api/common/config.Version=dev-${{ needs.check-updates.outputs.main_sha }}'" -o one-api-arm64
 
-      - name: 配置Docker构建环境
-        uses: docker/setup-buildx-action@v3
-
-      - name: 登录Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 生成Docker元数据
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/one-hub
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=,suffix=-dev
-
-      - name: 构建并推送多平台镜像
+      - name: 构建多架构镜像
         uses: docker/build-push-action@v5
         with:
-          context: .
-          platforms: linux/amd64, linux/arm64
-          labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ steps.meta.outputs.tags }}
+          context: ./main-repo
+          platforms: linux/amd64,linux/arm64
           push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/one-hub:dev-${{ needs.check-updates.outputs.main_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          file: Dockerfile-action
 
-      - name: 发送构建成功通知
-        if: always()
+      - name: 发送部署通知
         uses: candies404/Multi-Channel-Notifier@latest
         with:
-          title: "✅ 构建成功｜${{ github.repository }}"
-          content: |
-            版本: ${{ env.version }}
-            镜像地址: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/one-hub:${{ steps.meta.outputs.version }}
+          title: "成功部署新版本"
+          content: "版本号: dev-${{ needs.check-updates.outputs.main_sha }}"
           hitokoto: 'false'
           wpush_key: ${{ secrets.WPUSH_KEY }}
