@@ -15,7 +15,7 @@ jobs:
       issues: write
     env:
       TZ: Asia/Shanghai
-    steps:
+  steps:
     - name: 检查主仓库更新
       id: check_main
       run: |
