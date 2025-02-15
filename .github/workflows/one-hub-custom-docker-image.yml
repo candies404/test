@@ -67,20 +67,7 @@ jobs:
             echo "未找到 Issue，重试 $i/3..."
             sleep $((i*2))
           done
-      
-          # 构建 Issue 内容
-          echo "构建 Issue 内容..."
-          issue_body=$(jq -n \
-            --arg main "${{ env.MAIN_SHA }}" \
-            --arg table "${{ env.TABLE_SHA }}" \
-            --arg ts "${{ env.MAIN_TIMESTAMP }}" \
-            '{
-              repo_sha: $main,
-              TableRow_file_sha: $table,
-              timestamp: $ts
-            }')
-          printf "Issue 内容:⬇️\n%s\n" "$issue_body"
-        
+             
           if [ $(jq 'length' <<< "$issues") -eq 0 ]; then
             # 构建 Issue 内容
             echo "构建 Issue 内容..."
