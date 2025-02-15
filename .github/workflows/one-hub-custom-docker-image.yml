@@ -98,7 +98,7 @@ jobs:
             echo "现有 Issue 内容: $existing_body"
       
             # 解析现有 Issue 内容
-            existing_data=$(echo "$existing_body" | jq fromjson)
+            existing_data=$(echo "$existing_body" | jq -R fromjson)
             if [ $? -ne 0 ]; then
               echo "::error::无法解析现有 Issue 内容"
               exit 1
