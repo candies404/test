@@ -48,7 +48,7 @@ jobs:
             ISSUE_ID=$(echo "$ISSUE_INFO" | jq -r '.[0].number')
             ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
             echo "当前 Issue ID: $ISSUE_ID"
-            echo "当前 Issue 内容: $ISSUE_BODY"
+            printf "当前 Issue 内容:\n%s\n" "$ISSUE_BODY"
 
             NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^one-hub-update:.*/one-hub-update:$MAIN_SHA/")
             echo "更新后的 Issue 内容: $NEW_BODY"
@@ -90,7 +90,7 @@ jobs:
 
           ISSUE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100" | jq -r '[.[] | select(.title == "one-hub")]')
           ISSUE_BODY=$(echo "$ISSUE_INFO" | jq -r '.[0].body')
-          echo "当前 Issue 内容: $ISSUE_BODY"
+          printf "当前 Issue 内容:\n%s\n" "$ISSUE_BODY"
 
           NEW_BODY=$(echo "$ISSUE_BODY" | sed "s/^TableRow.jsx-sha:.*/TableRow.jsx-sha:$CURRENT_SHA/")
           echo "更新后的 Issue 内容: $NEW_BODY"
