@@ -175,8 +175,8 @@ jobs:
         env:
           CI: ""
         run: |
-          ls -la  # 查看当前目录
-          ls -la source-repo/  # 查看源仓库目录内容
+          # ls -la  # 查看当前目录
+          # ls -la source-repo/  # 查看源仓库目录内容
           export VERSION=$(cat VERSION)
           cp source-repo/one-hub/TableRow.jsx web/src/views/Channel/component/TableRow.jsx
           cd web
