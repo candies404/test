@@ -112,7 +112,7 @@ jobs:
           RUN npm prune --production --no-audit --no-fund
           FROM node:20-alpine
           WORKDIR /app
-          COPY --from=builder /app/dist ./dist1
+          COPY --from=builder /app/dist ./dist
           COPY --from=builder /app/server ./server
           COPY --from=builder /app/node_modules ./node_modules
           COPY --from=builder /app/package*.json ./
@@ -120,7 +120,7 @@ jobs:
           COPY --from=builder /app/db ./db
           EXPOSE 3001
           CMD ["node", "server/server.js"]
-          EOF
+          1EOF
 
       - name: 构建并上传镜像
         id: build_push
