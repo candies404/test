@@ -139,7 +139,7 @@ jobs:
           
           # 获取当前最新 SHA
           echo "获取当前 TableRow SHA..."
-          current_sha=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&_=$(date +%s)" |
+          current_sha=$(curl -fsS "https://api.github.com/repos/candies404/test/commits?path=one-hub/TableRow.jsx&sha=main&_=$(date +%s)" |
             jq -r 'if length>0 then .[0].sha[0:7] else "null" end')
           echo "当前 TableRow SHA: $current_sha"
           
