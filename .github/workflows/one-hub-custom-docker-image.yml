@@ -47,6 +47,7 @@ jobs:
           
           echo "=== 仓库快照获取完成 ==="
 
+      
       # ========== Issue 管理 ==========
       - name: 管理追踪 Issue
         id: issue_manager
@@ -88,8 +89,8 @@ jobs:
               -d "$(jq -n --arg title "$ISSUE_TITLE" --argjson body "$issue_body" '{title: $title, body: $body|tojson}')" \
               "https://api.github.com/repos/${{ github.repository }}/issues")
             echo "✅ 已创建 Issue: $(jq -r '.html_url' <<< "$response")"
-            echo "main_updated=true" >> $GITHUB_OUTPUT
-            echo "table_updated=false" >> $GITHUB_OUTPUT  # 首次创建不触发更新
+            echo "main_updated=true" >> $GITHUB_OUTPUT  # 首次创建时强制触发构建
+            echo "table_updated=false" >> $GITHUB_OUTPUT  # 首次创建不触发 TableRow 更新
             
           else
             # 存在现有 Issue ======================
@@ -97,42 +98,53 @@ jobs:
             existing_body=$(jq -r '.[0].body' <<< "$issues")
             echo "现有 Issue ID: $issue_id"
             echo "现有 Issue 内容: $existing_body"
-      
+        
             # 解析现有 Issue 内容
             existing_data=$(echo "$existing_body" | jq -R fromjson)
             if [ $? -ne 0 ]; then
               echo "::error::无法解析现有 Issue 内容"
               exit 1
             fi
-      
+        
             # 获取旧 SHA 值
+            old_main_sha=$(jq -r '.repo_sha' <<< "$existing_data")
+            current_main_sha="${{ env.MAIN_SHA }}"
             old_table_sha=$(jq -r '.TableRow_file_sha' <<< "$existing_data")
             current_table_sha="${{ env.TABLE_SHA }}"
+            echo "旧主仓库 SHA: $old_main_sha"
+            echo "新主仓库 SHA: $current_main_sha"
             echo "旧 TableRow SHA: $old_table_sha"
             echo "新 TableRow SHA: $current_table_sha"
             
-            # 比较逻辑（核心修改）
+            # 比较主仓库 SHA
+            main_updated=false
+            if [ "$current_main_sha" != "$old_main_sha" ]; then
+              echo "🔄 检测到主仓库更新"
+              main_updated=true
+            else
+              echo "✅ 主仓库未更新"
+            fi
+            
+            # 比较 TableRow SHA
             table_updated=false
             if [ "$current_table_sha" != "$old_table_sha" ]; then
               echo "🔄 检测到 TableRow 更新"
               table_updated=true
-              
-              # 构建新 body（保留其他字段）
-              issue_body=$(jq -n \
-                --arg main "${{ env.MAIN_SHA }}" \
-                --arg table "${{ env.TABLE_SHA }}" \
-                --arg ts "${{ env.MAIN_TIMESTAMP }}" \
-                --argjson old "$existing_data" \
-                '$old + {
-                  TableRow_file_sha: $table,
-                  repo_sha: $main,
-                  timestamp: $ts
-                }')
             else
               echo "✅ TableRow 未更新"
-              # 保持原有 body 不变
-              issue_body="$existing_data"
             fi
+            
+            # 构建新 body（保留其他字段）
+            issue_body=$(jq -n \
+              --arg main "${{ env.MAIN_SHA }}" \
+              --arg table "${{ env.TABLE_SHA }}" \
+              --arg ts "${{ env.MAIN_TIMESTAMP }}" \
+              --argjson old "$existing_data" \
+              '$old + {
+                TableRow_file_sha: $table,
+                repo_sha: $main,
+                timestamp: $ts
+              }')
             
             # 更新 Issue（无论是否有变化都需要保持时间戳最新）
             echo "=== 更新 Issue ==="
@@ -143,8 +155,8 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/issues/$issue_id" > /dev/null
             
             # 设置输出变量
+            echo "main_updated=$main_updated" >> $GITHUB_OUTPUT
             echo "table_updated=$table_updated" >> $GITHUB_OUTPUT
-            echo "main_updated=true" >> $GITHUB_OUTPUT  # 强制保持为true以触发后续步骤
           fi
           echo "=== Issue 管理完成 ==="
 
