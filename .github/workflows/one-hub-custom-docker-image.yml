@@ -79,7 +79,7 @@ jobs:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
     needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}  # 修正条件判断
+    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
     
     steps:
       - name: 设置指定版本仓库
@@ -89,13 +89,23 @@ jobs:
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
 
-      - name: 缓存 npm 缓存目录
+      - name: 缓存npm依赖
         uses: actions/cache@v4
+        id: npm-cache
         with:
-          path: ~/.npm
-          key: npm-${{ hashFiles('uptime-kuma/package-lock.json') }}
+          path: |
+            ~/.npm
+            uptime-kuma/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
           restore-keys: |
-            npm-
+            ${{ runner.os }}-node-
+
+      # 关键改进：主机预安装依赖
+      - name: 安装依赖
+        run: |
+          cd uptime-kuma
+          npm ci --legacy-peer-deps --prefer-offline --no-audit --no-fund
+          rm -rf node_modules/.cache
 
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -103,7 +113,7 @@ jobs:
           driver-opts: |
             image=moby/buildkit:master
             network=host
-          buildkitd-config-inline: |  # 修正参数名称
+          buildkitd-config-inline: | 
             [worker.oci]
               max-parallelism = 4
             [registry."docker.io"]
@@ -115,34 +125,23 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 创建 Dockerfile
+      - name: 创建优化版 Dockerfile
         run: |
           cat <<EOF > uptime-kuma/Dockerfile
-          # syntax=docker/dockerfile:1.4
-          FROM node:20-alpine AS builder
+          FROM node:20-alpine as builder
           WORKDIR /app
           
-          # 使用 BuildKit 缓存挂载
-          RUN --mount=type=cache,target=/root/.npm \
-              npm config set cache /root/.npm --global
-              
-          COPY package*.json ./
-          RUN --mount=type=cache,target=/root/.npm \
-              npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline
-          
+          # 复用主机已安装的依赖
+          COPY package*.json .
+          COPY node_modules ./node_modules  # 直接复制缓存
+
           COPY . .
           RUN npm run build
-          
-          RUN npm prune --production --no-audit --no-fund
-          
+
+          # 精简阶段
           FROM node:20-alpine
           WORKDIR /app
-          COPY --from=builder /app/dist ./dist
-          COPY --from=builder /app/server ./server
-          COPY --from=builder /app/node_modules ./node_modules
-          COPY --from=builder /app/package*.json ./
-          COPY --from=builder /app/src ./src
-          COPY --from=builder /app/db ./db
+          COPY --from=builder /app .
           EXPOSE 3001
           CMD ["node", "server/server.js"]
           EOF
@@ -159,13 +158,15 @@ jobs:
           TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
           docker buildx build \
-            --push \
-            --platform linux/amd64,linux/arm64 \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t $IMAGE_NAME:$TAG \
-            -t $IMAGE_NAME:latest .
-
-          echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
-          echo "镜像推送完成"
+            -t $IMAGE_NAME:latest \
+            --push \
+            .
+           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
+           echo "镜像推送完成"
 
       - name: 获取构建时间
         id: build_time
