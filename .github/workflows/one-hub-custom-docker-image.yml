@@ -169,13 +169,13 @@ jobs:
           
           # 使用原子化存储的初始值
           initial_sha="${{ env.TABLE_SHA }}"
-          echo "初始 TableRow SHA: $initial_sha"
+          echo "快照 TableRow SHA: $initial_sha"
           
           # 获取当前最新 SHA
-          echo "获取当前 TableRow SHA..."
+          echo "获取最新 TableRow SHA..."
           current_sha=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&sha=main&_=$(date +%s)" |
             jq -r 'if length>0 then .[0].sha[0:7] else "null" end')
-          echo "当前 TableRow SHA: $current_sha"
+          echo "最新 TableRow SHA: $current_sha"
           
           # 检查更新
           if [ "${{ steps.issue_manager.outputs.is_first_run }}" == "true" ]; then
