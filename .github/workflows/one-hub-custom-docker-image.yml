@@ -91,6 +91,7 @@ jobs:
             echo "✅ 已创建 Issue: $(jq -r '.html_url' <<< "$response")"
             echo "main_updated=true" >> $GITHUB_OUTPUT  # 首次创建时强制触发构建
             echo "table_updated=false" >> $GITHUB_OUTPUT  # 首次创建不触发 TableRow 更新
+            echo "is_first_run=true" >> $GITHUB_OUTPUT  # 标记为首次运行
             
           else
             # 存在现有 Issue ======================
@@ -116,7 +117,7 @@ jobs:
             echo "旧 TableRow SHA: $old_table_sha"
             echo "新 TableRow SHA: $current_table_sha"
             
-            # 比较主仓库 SHA
+            # 比较逻辑
             main_updated=false
             if [ "$current_main_sha" != "$old_main_sha" ]; then
               echo "🔄 检测到主仓库更新"
@@ -124,8 +125,8 @@ jobs:
             else
               echo "✅ 主仓库未更新"
             fi
-            
-            # 比较 TableRow SHA
+                  
+                  # 比较 TableRow SHA
             table_updated=false
             if [ "$current_table_sha" != "$old_table_sha" ]; then
               echo "🔄 检测到 TableRow 更新"
@@ -134,7 +135,7 @@ jobs:
               echo "✅ TableRow 未更新"
             fi
             
-            # 构建新 body（保留其他字段）
+            # 更新 Issue
             issue_body=$(jq -n \
               --arg main "${{ env.MAIN_SHA }}" \
               --arg table "${{ env.TABLE_SHA }}" \
@@ -157,6 +158,7 @@ jobs:
             # 设置输出变量
             echo "main_updated=$main_updated" >> $GITHUB_OUTPUT
             echo "table_updated=$table_updated" >> $GITHUB_OUTPUT
+            echo "is_first_run=false" >> $GITHUB_OUTPUT  # 标记为非首次运行
           fi
           echo "=== Issue 管理完成 ==="
 
@@ -178,7 +180,10 @@ jobs:
           echo "当前 TableRow SHA: $current_sha"
           
           # 检查更新
-          if [ "$current_sha" != "$initial_sha" ] && [ "$initial_sha" != "null" ]; then
+          if [ "${{ steps.issue_manager.outputs.is_first_run }}" == "true" ]; then
+            echo "🔄 首次运行，跳过 TableRow 更新检查"
+            echo "table_file_updated=false" >> $GITHUB_OUTPUT
+          elif [ "$current_sha" != "$initial_sha" ] && [ "$initial_sha" != "null" ]; then
             echo "🚨 检测到 TableRow 更新"
             echo "table_file_updated=true" >> $GITHUB_OUTPUT
           else
