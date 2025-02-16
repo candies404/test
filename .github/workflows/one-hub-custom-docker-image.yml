@@ -2,7 +2,7 @@ name: uptime-kuma 构建并推送镜像
 
 on:
   workflow_dispatch:
-
+  
 jobs:
   Check-Update:
     name: 检查更新
@@ -40,6 +40,7 @@ jobs:
           else
             echo "Docker Hub返回的标签是: $TAG_EXISTS"
           fi
+
 
           if [[ "$TAG_EXISTS" == "$EXPECTED_TAG" ]]; then
             echo "repo_updated=false" >> $GITHUB_OUTPUT
@@ -81,12 +82,20 @@ jobs:
     if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
     
     steps:
-      - name: 设置指定版本仓库
+   - name: 设置指定版本仓库
         uses: actions/checkout@v4
         with:
           repository: louislam/uptime-kuma
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
+
+      - name: 缓存 npm 缓存目录
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('uptime-kuma/package-lock.json') }}
+          restore-keys: |
+            npm-
 
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -94,7 +103,7 @@ jobs:
           driver-opts: |
             image=moby/buildkit:master
             network=host
-          buildkitd-config-inline: |
+          config-inline: |
             [worker.oci]
               max-parallelism = 4
             [registry."docker.io"]
@@ -109,14 +118,23 @@ jobs:
       - name: 创建 Dockerfile
         run: |
           cat <<EOF > uptime-kuma/Dockerfile
+          # syntax=docker/dockerfile:1.4
           FROM node:20-alpine AS builder
           WORKDIR /app
+          
+          # 使用 BuildKit 缓存挂载
+          RUN --mount=type=cache,target=/root/.npm \
+              npm config set cache /root/.npm --global
+              
           COPY package*.json ./
-          RUN npm ci --legacy-peer-deps --no-audit --no-fund 
+          RUN --mount=type=cache,target=/root/.npm \
+              npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline
+          
           COPY . .
           RUN npm run build
           
-          RUN npm prune --omit=dev --no-audit --no-fund
+          RUN npm prune --production --no-audit --no-fund
+          
           FROM node:20-alpine
           WORKDIR /app
           COPY --from=builder /app/dist ./dist
@@ -140,15 +158,13 @@ jobs:
           COMMIT_DATE=$(git log -1 --format=%cs)
           TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
-          docker buildx build \
-            --cache-from type=gha \
-            --cache-to type=gha,mode=max \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -t $IMAGE_NAME:$TAG \
-            -t $IMAGE_NAME:latest \
-            --push \
-            .
-
+          echo "镜像标签为: $TAG"
+          docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
+          
+          echo "推送镜像到Docker Hub..."
+          docker push $IMAGE_NAME:$TAG
+          docker push $IMAGE_NAME:latest
+          
           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
           echo "镜像推送完成"
 
