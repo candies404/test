@@ -205,7 +205,7 @@ jobs:
           echo "=== 最终检查完成 ==="
 
       - name: 发送TableRow通知
-        if: steps.check_table.outputs.table_updated  == 'true'
+        if: steps.issue_manager.outputs.table_updated  == 'true'
         uses: candies404/Multi-Channel-Notifier@latest
         with:
           title: "TableRow组件更新"
