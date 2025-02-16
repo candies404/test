@@ -156,9 +156,9 @@ jobs:
           title: ${{ steps.build_push.outcome == 'success' && '✅ uptime-kuma 构建成功' || '❌ uptime-kuma 构建失败' }}
           content: |
             ${{ 
-              format('{0}',
-                steps.build_push.outcome == 'success'
-                ? format('
+              format('{0}', 
+                (steps.build_push.outcome == 'success' &&
+                  format('
                     ### 🚀 新版本镜像已发布
                     **发布时间:** {0}
                     **镜像标签:** {1}
@@ -173,7 +173,8 @@ jobs:
                     needs.Check-Update.outputs.last_commit_date,
                     secrets.DOCKERHUB_USERNAME
                   )
-                : format('
+                ) || (
+                  format('
                     ### 🔥 构建失败
                     **提交信息:** {0}
                     **失败原因:** {1}
@@ -184,5 +185,6 @@ jobs:
                     github.repository,
                     github.run_id
                   )
+                )
               )
             }}
