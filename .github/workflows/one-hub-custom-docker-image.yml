@@ -124,13 +124,13 @@ jobs:
               echo "✅ one-hub 仓库未更新"
             fi
                   
-                  # 比较 TableRow SHA
+            # 比较 TableRow SHA
             table_updated=false
             if [ "$current_table_sha" != "$old_table_sha" ]; then
               echo "🔄 检测到 TableRow 更新"
               table_updated=true
             else
-              echo "✅ TableRow 未更新，TableRow 检查 不执行"
+              echo "✅ TableRow 未更新，TableRow 更新检查 不执行"
             fi
             
             # 更新 Issue
