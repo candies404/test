@@ -88,15 +88,13 @@ jobs:
           repository: louislam/uptime-kuma
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
-    
-      - name: 进入工作目录
-        run: cd uptime-kuma
 
-      - name: 验证文件存在性
+      - name: 验证文件路径
         run: |
-          echo "当前工作目录: $(pwd)"
-          ls -la package-lock.json
-          echo "文件哈希: $(sha1sum package-lock.json)"
+          echo "工作区绝对路径: $GITHUB_WORKSPACE"
+          echo "子目录文件列表:"
+          ls -la $GITHUB_WORKSPACE/uptime-kuma
+          test -f $GITHUB_WORKSPACE/uptime-kuma/package-lock.json || exit 1
 
       - name: 缓存npm依赖
         uses: actions/cache@v4
@@ -104,9 +102,15 @@ jobs:
         with:
           path: |
             ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}-v5
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-node-
+
+      - name: 进入工作目录
+        run: cd uptime-kuma
+
+      - name: 安装依赖
+        run: npm ci --legacy-peer-deps
 
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -127,6 +131,7 @@ jobs:
 
       - name: 创建Dockerfile
         run: |
+          cd uptime-kuma
           cat <<EOF > Dockerfile
           FROM node:20-alpine AS builder
           WORKDIR /app
@@ -156,6 +161,7 @@ jobs:
         env:
           IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma
         run: |
+          cd uptime-kuma
           # 保持与检查阶段相同的7位短SHA
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           COMMIT_DATE=$(git log -1 --format=%cs)
