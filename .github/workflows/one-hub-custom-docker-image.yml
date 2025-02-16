@@ -2,7 +2,7 @@ name: uptime-kuma 构建并推送镜像
 
 on:
   workflow_dispatch:
-
+  
 jobs:
   Check-Update:
     name: 检查更新
@@ -27,11 +27,12 @@ jobs:
         run: |
           cd uptime-kuma
           CURRENT_SHA=$(git rev-parse HEAD)
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          # 明确指定短SHA为7位
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
           COMMIT_DATE=$(git log -1 --format=%cs)
           EXPECTED_TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
-          echo "正在检查标签: $EXPECTED_TAG"
+          echo "正在检查精确标签: $EXPECTED_TAG"
           TAG_EXISTS=$(curl -sf "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/$EXPECTED_TAG/" | jq -r '.name')
           echo "Docker Hub返回: $TAG_EXISTS"
 
@@ -120,11 +121,12 @@ jobs:
           IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma
         run: |
           cd uptime-kuma
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          # 保持与检查阶段相同的7位短SHA
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
           COMMIT_DATE=$(git log -1 --format=%cs)
           TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
-          echo "开始构建镜像: $TAG"
+          echo "生成精确标签: $TAG"
           docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
           
           echo "推送镜像到Docker Hub..."
