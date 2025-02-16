@@ -82,26 +82,26 @@ jobs:
     if: ${{ needs.Check-Update.outputs.repo_updated == 'true' }}
     
     steps:
-      - name: 设置指定版本仓库 ✅ 增加持久化路径
+      - name: 设置指定版本仓库
         uses: actions/checkout@v4
         with:
           repository: louislam/uptime-kuma
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
-          persist-credentials: false
-          
-      - name: 查看缓存路径
+    
+      - name: 验证仓库结构
         run: |
-            echo "当前工作目录: $(pwd)"
-            ls -la uptime-kuma
-
+          echo "工作区路径: $GITHUB_WORKSPACE"
+          ls -la $GITHUB_WORKSPACE/uptime-kuma
+          test -f $GITHUB_WORKSPACE/uptime-kuma/package-lock.json || exit 1
+    
       - name: 缓存npm依赖
         uses: actions/cache@v4
         id: npm-cache
         with:
           path: |
             ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}-v4
           restore-keys: |
             ${{ runner.os }}-node-
 
