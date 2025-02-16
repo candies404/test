@@ -160,35 +160,35 @@ jobs:
           fi
           echo "=== Issue 管理完成 ==="
 
-      # ========== TableRow 检查 ==========
-      - name: 检查组件更新
-        id: check_table
-        if: steps.issue_manager.outputs.main_updated == 'true'
-        run: |
-          echo "=== 开始检查 TableRow 更新 ==="
+      # # ========== TableRow 检查 ==========
+      # - name: 检查组件更新
+      #   id: check_table
+      #   if: steps.issue_manager.outputs.main_updated == 'true'
+      #   run: |
+      #     echo "=== 开始检查 TableRow 更新 ==="
           
-          # 使用原子化存储的初始值
-          initial_sha="${{ env.TABLE_SHA }}"
-          echo "快照 TableRow SHA: $initial_sha"
+      #     # 使用原子化存储的初始值
+      #     initial_sha="${{ env.TABLE_SHA }}"
+      #     echo "快照 TableRow SHA: $initial_sha"
           
-          # 获取当前最新 SHA
-          echo "获取最新 TableRow SHA..."
-          current_sha=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&sha=main&_=$(date +%s)" |
-            jq -r 'if length>0 then .[0].sha[0:7] else "null" end')
-          echo "最新 TableRow SHA: $current_sha"
+      #     # 获取当前最新 SHA
+      #     echo "获取最新 TableRow SHA..."
+      #     current_sha=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&sha=main&_=$(date +%s)" |
+      #       jq -r 'if length>0 then .[0].sha[0:7] else "null" end')
+      #     echo "最新 TableRow SHA: $current_sha"
           
-          # 检查更新
-          if [ "${{ steps.issue_manager.outputs.is_first_run }}" == "true" ]; then
-            echo "🔄 首次运行，跳过 TableRow 更新检查"
-            echo "table_file_updated=false" >> $GITHUB_OUTPUT
-          elif [ "$current_sha" != "$initial_sha" ] && [ "$initial_sha" != "null" ]; then
-            echo "🚨 检测到 TableRow 更新"
-            echo "table_file_updated=true" >> $GITHUB_OUTPUT
-          else
-            echo "✅ 无组件更新"
-            echo "table_file_updated=false" >> $GITHUB_OUTPUT
-          fi
-          echo "=== TableRow 检查完成 ==="
+      #     # 检查更新
+      #     if [ "${{ steps.issue_manager.outputs.is_first_run }}" == "true" ]; then
+      #       echo "🔄 首次运行，跳过 TableRow 更新检查"
+      #       echo "table_file_updated=false" >> $GITHUB_OUTPUT
+      #     elif [ "$current_sha" != "$initial_sha" ] && [ "$initial_sha" != "null" ]; then
+      #       echo "🚨 检测到 TableRow 更新"
+      #       echo "table_file_updated=true" >> $GITHUB_OUTPUT
+      #     else
+      #       echo "✅ 无组件更新"
+      #       echo "table_file_updated=false" >> $GITHUB_OUTPUT
+      #     fi
+      #     echo "=== TableRow 检查完成 ==="
 
       # ========== 最终检查 ==========
       - name: 构建决策
@@ -205,7 +205,7 @@ jobs:
           echo "=== 最终检查完成 ==="
 
       - name: 发送TableRow通知
-        if: steps.check_table.outputs.table_file_updated == 'true'
+        if: steps.check_table.outputs.table_updated  == 'true'
         uses: candies404/Multi-Channel-Notifier@latest
         with:
           title: "TableRow组件更新"
