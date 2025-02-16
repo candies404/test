@@ -79,7 +79,7 @@ jobs:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
     needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated == 'true' }}
+    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
     
     steps:
       - name: 设置指定版本仓库
@@ -112,7 +112,7 @@ jobs:
           RUN npm prune --production --no-audit --no-fund
           FROM node:20-alpine
           WORKDIR /app
-          COPY --from=builder /app/dist ./dist
+          COPY --from=builder /app/dist ./dist1
           COPY --from=builder /app/server ./server
           COPY --from=builder /app/node_modules ./node_modules
           COPY --from=builder /app/package*.json ./
@@ -175,12 +175,9 @@ jobs:
               || format('
               ### 🔥 构建失败需处理
               **失败时间:** {0}
-              **最后提交:** {1}
-              **提交作者:** {2}
-              **提交时间:** {3}
-              **跟踪仓库:** [uptime-kuma](https://github.com/louislam/uptime-kuma)',
+              **构建日志:** [查看详情]({1}/{2}/actions/runs/{3})',
               env.BUILD_TIME,
-              needs.Check-Update.outputs.last_commit_msg,
-              needs.Check-Update.outputs.last_commit_author,
-              needs.Check-Update.outputs.last_commit_date)
+              github.server_url,
+              github.repository,
+              github.run_id
             ) }}
