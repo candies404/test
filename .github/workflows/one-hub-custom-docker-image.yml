@@ -79,7 +79,7 @@ jobs:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
     needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
+    if: ${{ needs.Check-Update.outputs.repo_updated == 'true' }}
     
     steps:
       - name: 设置指定版本仓库
@@ -120,7 +120,7 @@ jobs:
           COPY --from=builder /app/db ./db
           EXPOSE 3001
           CMD ["node", "server/server.js"]
-          1EOF
+          EOF
 
       - name: 构建并上传镜像
         id: build_push
