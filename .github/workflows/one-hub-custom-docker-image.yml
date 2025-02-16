@@ -103,12 +103,17 @@ jobs:
           cat <<EOF > uptime-kuma/Dockerfile
           FROM node:20-alpine as builder
           WORKDIR /app
+          # 使用国内镜像源加速安装
+          RUN npm config set registry https://registry.npmmirror.com
           COPY package*.json ./
-          RUN npm install --legacy-peer-deps && npm cache clean --force
+          # 针对特定依赖的构建优化
+          RUN apk add --no-cache python3 make g++
+          # 使用精确版本安装并抑制警告
+          RUN npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline
           COPY . .
           RUN npm run build
-          RUN npm prune --production
-
+          # 严格生产环境依赖修剪
+          RUN npm prune --production --no-audit --no-fund
           FROM node:20-alpine
           WORKDIR /app
           COPY --from=builder /app/dist ./dist
