@@ -89,16 +89,20 @@ jobs:
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
           persist-credentials: false
+          
+      - name: 查看缓存路径
+        run: |
+            echo "当前工作目录: $(pwd)"
+            ls -la uptime-kuma
 
-      - name: 缓存npm依赖 ✅ 修正路径匹配模式
+      - name: 缓存npm依赖
         uses: actions/cache@v4
         id: npm-cache
         with:
-          path: |
+            path: |
             ~/.npm
-            uptime-kuma/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
-          restore-keys: |
+            key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
+            restore-keys: |
             ${{ runner.os }}-node-
 
       - name: 设置 Docker Buildx
