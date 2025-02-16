@@ -36,7 +36,7 @@ jobs:
           TAG_EXISTS=$(curl -sf "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/$EXPECTED_TAG/" | jq -r '.name')
           
           if [ -z "$TAG_EXISTS" ]; then
-            echo "抱歉，没有找到标签 $EXPECTED_TAG。"
+            echo "抱歉，没有找到标签 $EXPECTED_TAG"
           else
             echo "Docker Hub返回的标签是: $TAG_EXISTS"
           fi
