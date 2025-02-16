@@ -145,6 +145,7 @@ jobs:
 
       - name: 获取构建时间
         id: build_time
+        if: always()
         run: echo "BUILD_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
 
       - name: 发送构建通知
