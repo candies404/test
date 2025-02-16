@@ -101,8 +101,8 @@ jobs:
         with:
           path: |
             ~/.npm
-            key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
-            restore-keys: |
+          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
+          restore-keys: |
             ${{ runner.os }}-node-
 
       - name: 设置 Docker Buildx
