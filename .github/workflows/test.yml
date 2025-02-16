@@ -1,43 +1,89 @@
-name: test
+name: Docker Image Sync
 
 on:
-  #  schedule:
-  #    - cron: '0 0 * * *' # 每天的凌晨 0:00 执行一次，即中国早上8点
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
 
 jobs:
-  Uptime-Kuma-Build-and-Push-Docker-Image:
-    name: 'Uptime Kuma 构建Docker 镜像'
+  docker-sync:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 设置仓库
-        uses: actions/checkout@v4
-        with:
-          repository: louislam/uptime-kuma
-          path: uptime-kuma
-          fetch-depth: 0
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: 检查 Docker Hub 最新镜像
-        id: check_docker_hub
-        run: |
-          cd uptime-kuma
-          CURRENT_SHA=$(git rev-parse --short HEAD)
-          echo "CURRENT_SHA值为：$CURRENT_SHA"
-          # 获取 Docker Hub 上第二新的标签（通常是最新的非 latest 标签）
-          LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/" | jq -r '.results[1].name')
-          echo "LATEST_TAG值为：$LATEST_TAG"
-          if [[ $LATEST_TAG == *"$CURRENT_SHA"* ]]; then
-            echo "REPO_UPDATED=false" >> $GITHUB_ENV
-            
-            echo "Docker Hub 已有最新 SHA 的镜像。无需更新。"
+    - name: Setup sync rules
+      id: setup
+      run: |
+        # 从环境变量读取映射规则
+        RAW_MAPPINGS="${{ vars.SYNC_MAPPINGS }}"
+        
+        # 转换为数组并去重
+        IFS=',' read -ra RULES <<< "${RAW_MAPPINGS//, /,}"
+        UNIQUE_RULES=$(printf "%s\n" "${RULES[@]}" | sort -u)
+        
+        # 生成处理用变量
+        echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
+        echo "$UNIQUE_RULES" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+
+    - name: Login Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Process images
+      run: |
+        IFS=$'\n'
+        for rule in $SYNC_RULES; do
+          [[ -z "$rule" ]] && continue
+
+          # 分离源和目标部分
+          src_image=$(cut -d= -f1 <<< "$rule")
+          target_part=$(cut -d= -f2 <<< "$rule")
+
+          echo "🗃️ 处理规则：$src_image → $target_part"
+
+          # 拆分目标组件
+          if [[ "$target_part" == *":"* ]]; then
+            target_tag=${target_part##*:}
+            target_repo=${target_part%:*}
           else
-            echo "REPO_UPDATED=true" >> $GITHUB_ENV
-            echo "检测到新的提交，需要构建新镜像"
-            LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
-            LAST_COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
-            LAST_COMMIT_DATE=$(TZ='Asia/Shanghai' date -d "@$(git log -1 --format=%ct)" '+%Y-%m-%d %H:%M:%S')
-            echo "LAST_COMMIT_MSG=$LAST_COMMIT_MSG" >> $GITHUB_ENV
-            echo "LAST_COMMIT_AUTHOR=$LAST_COMMIT_AUTHOR" >> $GITHUB_ENV
-            echo "LAST_COMMIT_DATE=$LAST_COMMIT_DATE" >> $GITHUB_ENV
+            target_tag="latest"
+            target_repo=$target_part
           fi
+
+          if [[ "$target_repo" == *"/"* ]]; then
+            target_user=${target_repo%%/*}
+            target_image_name=${target_repo#*/}
+          else
+            target_user="${{ secrets.DOCKERHUB_USERNAME }}"
+            target_image_name=$target_repo
+          fi
+
+          target_image="${target_user}/${target_image_name}:${target_tag}"
+
+          # 执行同步流程
+          echo "🔎 源镜像：$src_image"
+          echo "🎯 目标镜像：$target_image"
+          
+          docker pull -q "$src_image"
+          src_id=$(docker inspect --format '{{.Id}}' "$src_image")
+
+          if docker pull -q "$target_image" 2>/dev/null; then
+            target_id=$(docker inspect --format '{{.Id}}' "$target_image")
+          else
+            target_id="not_exist"
+          fi
+
+          if [[ "$src_id" != "$target_id" ]]; then
+            echo "🚀 发现更新，正在同步..."
+            docker tag "$src_image" "$target_image"
+            docker push "$target_image"
+          else
+            echo "✅ 已经是最新版本"
+          fi
+
+          echo "---------------------------------------"
+        done
