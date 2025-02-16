@@ -2,7 +2,7 @@ name: uptime-kuma 构建并推送镜像
 
 on:
   workflow_dispatch:
-  
+
 jobs:
   Check-Update:
     name: 检查更新
@@ -40,7 +40,6 @@ jobs:
           else
             echo "Docker Hub返回的标签是: $TAG_EXISTS"
           fi
-
 
           if [[ "$TAG_EXISTS" == "$EXPECTED_TAG" ]]; then
             echo "repo_updated=false" >> $GITHUB_OUTPUT
@@ -89,8 +88,28 @@ jobs:
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
 
+      - name: 缓存npm依赖
+        uses: actions/cache@v4
+        id: npm-cache
+        with:
+          path: |
+            ~/.npm
+            uptime-kuma/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
+          config-inline: |
+            [worker.oci]
+              max-parallelism = 4
+            [registry."docker.io"]
+              mirrors = ["mirror.ghcr.io"]
 
       - name: 登录 Docker Hub
         uses: docker/login-action@v3
@@ -104,13 +123,10 @@ jobs:
           FROM node:20-alpine as builder
           WORKDIR /app
           COPY package*.json ./
-          # 针对特定依赖的构建优化
-          # RUN apk add --no-cache python3 make g++
-          # 使用精确版本安装并抑制警告
           RUN npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline
           COPY . .
           RUN npm run build
-          # 严格生产环境依赖修剪
+          
           RUN npm prune --production --no-audit --no-fund
           FROM node:20-alpine
           WORKDIR /app
@@ -135,13 +151,15 @@ jobs:
           COMMIT_DATE=$(git log -1 --format=%cs)
           TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
-          echo "镜像标签为: $TAG"
-          docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
-          
-          echo "推送镜像到Docker Hub..."
-          docker push $IMAGE_NAME:$TAG
-          docker push $IMAGE_NAME:latest
-          
+          docker buildx build \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t $IMAGE_NAME:$TAG \
+            -t $IMAGE_NAME:latest \
+            --push \
+            .
+
           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
           echo "镜像推送完成"
 
