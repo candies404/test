@@ -101,7 +101,7 @@ jobs:
         with:
           path: |
             ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}-v4
+          key: ${{ runner.os }}-node-${{ hashFiles('${{ github.workspace }}/uptime-kuma/package-lock.json') }}-v4
           restore-keys: |
             ${{ runner.os }}-node-
 
