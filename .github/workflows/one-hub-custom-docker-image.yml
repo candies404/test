@@ -56,18 +56,18 @@ jobs:
         id: check_time
         run: echo "check_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
 
-      - name: 发送无需更新通知
-        if: ${{ steps.check_docker_hub.outputs.repo_updated == 'false' }}
-        uses: candies404/Multi-Channel-Notifier@latest
-        with:
-          wpush_key: ${{ secrets.WPUSH_KEY }}
-          hitokoto: 'false'
-          title: "uptime-kuma 镜像检查报告"
-          content: |
-            ### 🟢 镜像状态未更新
-            **检查时间:** ${{ steps.check_time.outputs.check_time }}
-            **当前状态:** Docker Hub 已存在最新版本镜像
-            **仓库跟踪:** [louislam/uptime-kuma](https://github.com/louislam/uptime-kuma)
+      # - name: 发送无需更新通知
+      #   if: ${{ steps.check_docker_hub.outputs.repo_updated == 'false' }}
+      #   uses: candies404/Multi-Channel-Notifier@latest
+      #   with:
+      #     wpush_key: ${{ secrets.WPUSH_KEY }}
+      #     hitokoto: 'false'
+      #     title: "uptime-kuma 镜像检查报告"
+      #     content: |
+      #       ### 🟢 镜像状态未更新
+      #       **检查时间:** ${{ steps.check_time.outputs.check_time }}
+      #       **当前状态:** Docker Hub 已存在最新版本镜像
+      #       **仓库跟踪:** [louislam/uptime-kuma](https://github.com/louislam/uptime-kuma)
 
   Build-and-Push:
     name: 构建并推送镜像
