@@ -58,9 +58,9 @@ jobs:
             echo "未找到匹配标签，触发构建"
           fi
 
-      - name: 获取检查时间
-        id: check_time
-        run: echo "check_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+      # - name: 获取检查时间
+      #   id: check_time
+      #   run: echo "check_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
 
       # - name: 发送无需更新通知
       #   if: ${{ steps.check_docker_hub.outputs.repo_updated == 'false' }}
