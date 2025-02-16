@@ -31,6 +31,7 @@ jobs:
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           COMMIT_DATE=$(git log -1 --format=%cs)
           EXPECTED_TAG="${COMMIT_DATE}-${SHORT_SHA}"
+          echo "markdown 测试 [uptime-kuma](https://github.com/louislam/uptime-kuma)"
 
           echo "正在检查标签: $EXPECTED_TAG"
           TAG_EXISTS=$(curl -sf "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/$EXPECTED_TAG/" | jq -r '.name')
@@ -163,7 +164,7 @@ jobs:
               **提交信息:** {2}
               **提交作者:** {3}
               **提交时间:** {4}
-              **镜像地址:** https://hub.docker.com/r/{5}/uptime-kuma',
+              **镜像地址:** [uptime-kuma](https://github.com/louislam/uptime-kuma)',
               env.BUILD_TIME,
               env.IMAGE_TAG, 
               needs.Check-Update.outputs.last_commit_msg,
