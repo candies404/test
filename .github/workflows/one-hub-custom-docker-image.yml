@@ -138,7 +138,7 @@ jobs:
 
       - name: 获取构建时间
         id: build_time
-        run: echo "build_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+        run: echo "BUILD_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
 
       - name: 发送构建通知
         uses: candies404/Multi-Channel-Notifier@latest
@@ -158,7 +158,8 @@ jobs:
               **提交作者:** {3}
               **提交时间:** {4}
               **镜像地址:** https://hub.docker.com/r/{5}/uptime-kuma',
-              env.build_time, env.IMAGE_TAG, 
+              env.BUILD_TIME,
+              env.IMAGE_TAG, 
               needs.Check-Update.outputs.last_commit_msg,
               needs.Check-Update.outputs.last_commit_author,
               needs.Check-Update.outputs.last_commit_date,
@@ -171,7 +172,7 @@ jobs:
               **提交作者:** {2}
               **提交时间:** {3}
               **跟踪仓库:** [uptime-kuma](https://github.com/louislam/uptime-kuma)',
-              env.build_time, 
+              env.BUILD_TIME,
               needs.Check-Update.outputs.last_commit_msg,
               needs.Check-Update.outputs.last_commit_author,
               needs.Check-Update.outputs.last_commit_date)
