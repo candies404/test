@@ -35,7 +35,7 @@ jobs:
           
           # 获取 TableRow 的历史版本
           echo "获取 TableRow 历史版本..."
-          table_commit=$(curl -fsS "https://api.github.com/repos/candies404/test/commits?path=one-hub/TableRow.jsx&until=$main_timestamp")
+          table_commit=$(curl -fsS "https://api.github.com/repos/candies404/test/commits?path=web/src/views/Channel/component/TableRow.jsx&until=$main_timestamp")
           table_sha=$(jq -r 'if length>0 then .[0].sha[0:7] else "null" end' <<< "$table_commit")
           echo "TableRow SHA: $table_sha"
           
@@ -161,7 +161,7 @@ jobs:
           
           # 获取当前最新 SHA
           echo "获取当前 TableRow SHA..."
-          current_sha=$(curl -fsS "https://api.github.com/repos/candies404/test/commits?path=one-hub/TableRow.jsx&sha=main&_=$(date +%s)" |
+          current_sha=$(curl -fsS "https://api.github.com/repos/candies404/test/commits?path=web/src/views/Channel/component/TableRow.jsx&sha=main&_=$(date +%s)" |
             jq -r 'if length>0 then .[0].sha[0:7] else "null" end')
           echo "当前 TableRow SHA: $current_sha"
           
@@ -246,7 +246,7 @@ jobs:
           echo "=== 开始构建前端 ==="
           export VERSION=$(cat VERSION)
           echo "当前版本: $VERSION"
-          cp source-repo/one-hub/TableRow.jsx web/src/views/Channel/component/TableRow.jsx
+          cp source-repo/web/src/views/Channel/component/TableRow.jsx web/src/views/Channel/component/TableRow.jsx
           echo "TableRow.jsx 已替换"
           cd web
           yarn install
