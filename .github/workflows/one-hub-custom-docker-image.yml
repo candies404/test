@@ -82,7 +82,7 @@ jobs:
     if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
     
     steps:
-   - name: 设置指定版本仓库
+      - name: 设置指定版本仓库
         uses: actions/checkout@v4
         with:
           repository: louislam/uptime-kuma
