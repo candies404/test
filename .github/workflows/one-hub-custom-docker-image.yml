@@ -31,8 +31,7 @@ jobs:
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           COMMIT_DATE=$(git log -1 --format=%cs)
           EXPECTED_TAG="${COMMIT_DATE}-${SHORT_SHA}"
-          echo "markdown 测试 [uptime-kuma](https://github.com/louislam/uptime-kuma)"
-
+          
           echo "正在检查标签: $EXPECTED_TAG"
           TAG_EXISTS=$(curl -sf "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/$EXPECTED_TAG/" | jq -r '.name')
           
