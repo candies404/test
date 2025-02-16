@@ -5,15 +5,13 @@ on:
 
 jobs:
   check-updates:
-    name: 原子化更新检查
+    name: one-hub 更新检查
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.final_check.outputs.should_build }}
-      table_updated: ${{ steps.check_table.outputs.table_file_updated }}
     continue-on-error: true
     permissions:
       issues: write
-      contents: read
     env:
       TZ: Asia/Shanghai
       RETRY_COUNT: 3  # API 重试次数
@@ -26,12 +24,12 @@ jobs:
         run: |
           echo "=== 开始获取仓库快照 ==="
           
-          # 获取主仓库最新提交
-          echo "获取主仓库最新提交..."
+          # 获取 one-hub 仓库最新提交
+          echo "获取 one-hub 仓库最新提交..."
           main_commit=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits/main")
           main_sha=$(jq -r '.sha[0:7]' <<< "$main_commit")
           main_timestamp=$(jq -r '.commit.committer.date' <<< "$main_commit")
-          echo "主仓库 SHA: $main_sha (时间: $main_timestamp)"
+          echo "one-hub 仓库 SHA: $main_sha (时间: $main_timestamp)"
           
           # 获取 TableRow 的历史版本
           echo "获取 TableRow 历史版本..."
@@ -112,18 +110,18 @@ jobs:
             current_main_sha="${{ env.MAIN_SHA }}"
             old_table_sha=$(jq -r '.TableRow_file_sha' <<< "$existing_data")
             current_table_sha="${{ env.TABLE_SHA }}"
-            echo "旧主仓库 SHA: $old_main_sha"
-            echo "新主仓库 SHA: $current_main_sha"
+            echo "旧仓库 SHA: $old_main_sha"
+            echo "新仓库 SHA: $current_main_sha"
             echo "旧 TableRow SHA: $old_table_sha"
             echo "新 TableRow SHA: $current_table_sha"
             
             # 比较逻辑
             main_updated=false
             if [ "$current_main_sha" != "$old_main_sha" ]; then
-              echo "🔄 检测到主仓库更新"
+              echo "🔄 检测到 one-hub 仓库更新"
               main_updated=true
             else
-              echo "✅ 主仓库未更新"
+              echo "✅ one-hub 仓库未更新"
             fi
                   
                   # 比较 TableRow SHA
@@ -132,7 +130,7 @@ jobs:
               echo "🔄 检测到 TableRow 更新"
               table_updated=true
             else
-              echo "✅ TableRow 未更新"
+              echo "✅ TableRow 未更新，TableRow 检查 不执行"
             fi
             
             # 更新 Issue
