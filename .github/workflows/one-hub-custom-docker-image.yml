@@ -88,17 +88,6 @@ jobs:
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
 
-      - name: 缓存npm依赖
-        uses: actions/cache@v4
-        id: npm-cache
-        with:
-          path: |
-            ~/.npm
-            uptime-kuma/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('uptime-kuma/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
