@@ -15,17 +15,21 @@ jobs:
     - name: Setup sync rules
       id: setup
       run: |
-        # 清洗规则，去除空格和空行
+        # 清洗规则（增强空格处理）
         CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" |
-          tr '\n' ',' |                  # 将换行替换为逗号
-          sed -E 's/,+/ /g; s/^ +| +$//g' |  # 多个逗号转为空格，并去除首尾空格
-          tr ' ' '\n' |                  # 空格转为换行
-          grep -v '^$'                   # 删除空行
+          tr '\n' ',' | 
+          sed -E 's/[[:space:]]+//g; s/,+/ /g; s/^ | $//g' |
+          tr ' ' '\n' |
+          grep -v '^$'
         )
-        # 导出处理后的规则到环境变量
+        
         echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
         echo "$CLEANED_RULES" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
+
+        # 调试输出清洗后的规则
+        echo "=== 处理后规则 ==="
+        echo "$CLEANED_RULES"
 
     - name: Login Docker Hub
       uses: docker/login-action@v3
@@ -35,49 +39,48 @@ jobs:
 
     - name: Process images
       env:
-        DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"  # 从机密变量获取用户名
+        DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
       run: |
         IFS=$'\n'
         for rule in $SYNC_RULES; do
           [[ -z "$rule" ]] && continue
-
           echo "=== 处理规则: $rule ==="
 
-          # 分割源镜像和目标部分
-          if ! IFS="=" read -r src_image target_part <<< "$rule"; then
+          # 安全分割规则（忽略等号前的空格）
+          if ! IFS="=" read -r src_image target_part <<< "${rule// /}"; then
             echo "⚠️ 规则格式错误，跳过"
             continue
           fi
 
-          # 解析目标标签
-          target_tag="latest"
+          # 解析标签
           if [[ "$target_part" == *":"* ]]; then
             target_tag="${target_part##*:}"
             repo_part="${target_part%:*}"
           else
+            target_tag="latest"
             repo_part="$target_part"
           fi
 
           # 处理命名空间
-          if [[ "$repo_part" != *"/"* ]]; then
-            # 使用机密变量中的用户名作为默认命名空间
-            target_user="$DOCKERHUB_USER"
-            target_image="$repo_part"
-          else
-            # 分割用户和镜像名
+          if [[ "$repo_part" == *"/"* ]]; then
             target_user="${repo_part%%/*}"
             target_image="${repo_part#*/}"
-            # 验证用户名是否合法
-            if ! [[ "$target_user" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-              echo "❌ 非法用户名: $target_user"
+            # 验证用户名格式
+            if [[ ! "$target_user" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+              echo "❌ 非法的用户名格式: $target_user"
               continue
             fi
+          else
+            target_user="$DOCKERHUB_USER"
+            target_image="$repo_part"
           fi
 
           final_target="${target_user}/${target_image}:${target_tag}"
+          echo "使用的Docker用户: $DOCKERHUB_USER"
+          echo "生成的目标镜像: $final_target"
 
-          # 验证目标镜像格式
-          if ! [[ "$final_target" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*(:[a-zA-Z0-9_.-]+)?$ ]]; then
+          # 最终镜像验证（调整正则）
+          if ! [[ "$final_target" =~ ^([a-z0-9]+([._-][a-z0-9]+)*/)?[a-z0-9]+([._-][a-z0-9]+)*:[a-zA-Z0-9_.-]+$ ]]; then
             echo "❌ 非法的镜像格式: $final_target"
             continue
           fi
@@ -118,5 +121,5 @@ jobs:
             echo "✅ 镜像已是最新，无需操作"
           fi
 
-          echo "---------------------------------------"
+          echo "---------------------------------------"    
         done
