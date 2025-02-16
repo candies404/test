@@ -103,8 +103,6 @@ jobs:
           cat <<EOF > uptime-kuma/Dockerfile
           FROM node:20-alpine as builder
           WORKDIR /app
-          # 使用国内镜像源加速安装
-          # RUN npm config set registry https://registry.npmmirror.com
           COPY package*.json ./
           # 针对特定依赖的构建优化
           # RUN apk add --no-cache python3 make g++
@@ -137,7 +135,7 @@ jobs:
           COMMIT_DATE=$(git log -1 --format=%cs)
           TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
-          echo "生成精确标签: $TAG"
+          echo "镜像标签为: $TAG"
           docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
           
           echo "推送镜像到Docker Hub..."
