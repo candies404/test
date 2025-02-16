@@ -2,7 +2,7 @@ name: uptime-kuma 构建并推送镜像
 
 on:
   workflow_dispatch:
-  
+
 jobs:
   Check-Update:
     name: 检查更新
@@ -79,17 +79,18 @@ jobs:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
     needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
+    if: ${{ needs.Check-Update.outputs.repo_updated == 'true' }}
     
     steps:
-      - name: 设置指定版本仓库
+      - name: 设置指定版本仓库 ✅ 增加持久化路径
         uses: actions/checkout@v4
         with:
           repository: louislam/uptime-kuma
           path: uptime-kuma
           ref: ${{ needs.Check-Update.outputs.current_sha }}
+          persist-credentials: false
 
-      - name: 缓存npm依赖
+      - name: 缓存npm依赖 ✅ 修正路径匹配模式
         uses: actions/cache@v4
         id: npm-cache
         with:
@@ -100,20 +101,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 关键改进：主机预安装依赖
-      - name: 安装依赖
-        run: |
-          cd uptime-kuma
-          npm ci --legacy-peer-deps --prefer-offline --no-audit --no-fund
-          rm -rf node_modules/.cache
-
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
             image=moby/buildkit:master
-            network=host
-          buildkitd-config-inline: | 
+          buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 4
             [registry."docker.io"]
@@ -125,23 +118,28 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 创建优化版 Dockerfile
+      - name: 创建Dockerfile ✅ 优化依赖安装逻辑
         run: |
           cat <<EOF > uptime-kuma/Dockerfile
-          FROM node:20-alpine as builder
+          FROM node:20-alpine AS builder
           WORKDIR /app
-          
-          # 复用主机已安装的依赖
           COPY package*.json .
-          COPY node_modules ./node_modules  # 直接复制缓存
+
+          RUN --mount=type=cache,target=/root/.npm \ 
+              npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline
 
           COPY . .
           RUN npm run build
+          RUN npm prune --omit=dev
 
-          # 精简阶段
           FROM node:20-alpine
           WORKDIR /app
-          COPY --from=builder /app .
+          COPY --from=builder /app/dist ./dist
+          COPY --from=builder /app/server ./server
+          COPY --from=builder /app/node_modules ./node_modules
+          COPY --from=builder /app/package*.json ./
+          COPY --from=builder /app/src ./src
+          COPY --from=builder /app/db ./db
           EXPOSE 3001
           CMD ["node", "server/server.js"]
           EOF
@@ -161,12 +159,14 @@ jobs:
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --output type=image,push=true \
             -t $IMAGE_NAME:$TAG \
             -t $IMAGE_NAME:latest \
-            --push \
+            --progress plain \
             .
-           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
-           echo "镜像推送完成"
+
+          echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
+          echo "镜像推送完成"
 
       - name: 获取构建时间
         id: build_time
@@ -198,14 +198,10 @@ jobs:
               secrets.DOCKERHUB_USERNAME)
               
               || format('
-              ### 🔥 构建失败需处理
-              **失败时间:** {0}
-              **最后提交:** {1}
-              **提交作者:** {2}
-              **提交时间:** {3}
-              **跟踪仓库:** [uptime-kuma](https://github.com/louislam/uptime-kuma)',
-              env.BUILD_TIME,
+              ### 🔥 构建失败
+              **提交信息:** {0}
+              **失败原因:** {1}
+              **构建日志:** [查看详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})',
               needs.Check-Update.outputs.last_commit_msg,
-              needs.Check-Update.outputs.last_commit_author,
-              needs.Check-Update.outputs.last_commit_date)
+              "依赖安装失败或构建过程错误")
             ) }}
