@@ -15,14 +15,14 @@ jobs:
     - name: Setup sync rules
       id: setup
       run: |
-        # 清洗规则强化版
+        # 清洗规则，去除空格和空行
         CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" |
-          tr '\n' ',' |          # 换行转逗号
-          sed -E 's/,+/ /g; s/^ +| +$//g' |  # 逗号变空格，去除首尾空格
-          tr ' ' '\n' |          # 转多行格式
-          grep -v '^$'           # 删除空行
+          tr '\n' ',' |                  # 将换行替换为逗号
+          sed -E 's/,+/ /g; s/^ +| +$//g' |  # 多个逗号转为空格，并去除首尾空格
+          tr ' ' '\n' |                  # 空格转为换行
+          grep -v '^$'                   # 删除空行
         )
-        
+        # 导出处理后的规则到环境变量
         echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
         echo "$CLEANED_RULES" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
@@ -35,21 +35,21 @@ jobs:
 
     - name: Process images
       env:
-        DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}  # 关键修复点！！！！
+        DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"  # 从机密变量获取用户名
       run: |
         IFS=$'\n'
         for rule in $SYNC_RULES; do
           [[ -z "$rule" ]] && continue
 
-          echo "=== 当前规则：$rule ==="
+          echo "=== 处理规则: $rule ==="
 
-          # 安全分割规则
+          # 分割源镜像和目标部分
           if ! IFS="=" read -r src_image target_part <<< "$rule"; then
             echo "⚠️ 规则格式错误，跳过"
             continue
           fi
 
-          # 解码目标结构
+          # 解析目标标签
           target_tag="latest"
           if [[ "$target_part" == *":"* ]]; then
             target_tag="${target_part##*:}"
@@ -58,44 +58,64 @@ jobs:
             repo_part="$target_part"
           fi
 
-          # 命名空间处理强化逻辑
-          if [[ "$repo_part" == *"/"* ]]; then
+          # 处理命名空间
+          if [[ "$repo_part" != *"/"* ]]; then
+            # 使用机密变量中的用户名作为默认命名空间
+            target_user="$DOCKERHUB_USER"
+            target_image="$repo_part"
+          else
+            # 分割用户和镜像名
             target_user="${repo_part%%/*}"
             target_image="${repo_part#*/}"
-          else
-            target_user="$DOCKERHUB_USER"  # 使用环境变量！！！
-            target_image="$repo_part"
+            # 验证用户名是否合法
+            if ! [[ "$target_user" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+              echo "❌ 非法用户名: $target_user"
+              continue
+            fi
           fi
 
           final_target="${target_user}/${target_image}:${target_tag}"
 
-          # 镜像格式终检
+          # 验证目标镜像格式
           if ! [[ "$final_target" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*(:[a-zA-Z0-9_.-]+)?$ ]]; then
-            echo "❌ 不合法的镜像格式："$final_target""
+            echo "❌ 非法的镜像格式: $final_target"
             continue
           fi
 
-          echo "🔄 同步 [ $src_image ] → [ $final_target ]"
+          echo "🔄 同步中: $src_image → $final_target"
 
-          # 执行同步流程
+          # 拉取源镜像
           if ! docker pull -q "$src_image"; then
-            echo "❌ 源镜像拉取失败"
+            echo "❌ 无法拉取源镜像"
             continue
           fi
 
+          # 拉取目标镜像以检查是否存在
           if docker pull -q "$final_target" 2>/dev/null; then
-            need_push=false
+            target_exists=true
           else
-            need_push=true
+            target_exists=false
           fi
 
-          # 更新检查（优化ID比较）
-          if $need_push || [[ $(docker inspect -f '{{.Id}}' "$src_image" 2>/dev/null) != $(docker inspect -f '{{.Id}}' "$final_target" 2>/dev/null) ]]; then
-            docker tag "$src_image" "$final_target" &&
-            docker push "$final_target" &&
-            echo "✅ 同步成功" || echo "❌ 推送失败"
+          # 获取镜像ID进行比较
+          src_id=$(docker inspect -f '{{.Id}}' "$src_image")
+          if $target_exists; then
+            target_id=$(docker inspect -f '{{.Id}}' "$final_target")
           else
-            echo "✅ 已是最新无需同步"
+            target_id=""
+          fi
+
+          # 判断是否需要同步
+          if [[ "$src_id" != "$target_id" ]]; then
+            echo "🚀 检测到变更，开始同步..."
+            docker tag "$src_image" "$final_target"
+            if docker push -q "$final_target" 2>/dev/null; then
+              echo "✅ 同步成功"
+            else
+              echo "❌ 推送失败"
+            fi
+          else
+            echo "✅ 镜像已是最新，无需操作"
           fi
 
           echo "---------------------------------------"
