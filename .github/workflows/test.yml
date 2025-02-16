@@ -15,22 +15,16 @@ jobs:
     - name: Setup sync rules
       id: setup
       run: |
-        # 清洁化输入数据（关键修正步骤）
-        CLEAN_RULES=$(
-          echo "${{ vars.SYNC_MAPPINGS }}" |
-          tr -d '\n' |    # 移除换行符
-          sed 's/, */,/g' |  # 标准化分隔符
-          sed 's/^,//; s/,$//' # 去除首尾逗号
+        # 清洗规则强化版
+        CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" |
+          tr '\n' ',' |          # 换行转逗号
+          sed -E 's/,+/ /g; s/^ +| +$//g' |  # 逗号变空格，去除首尾空格
+          tr ' ' '\n' |          # 转多行格式
+          grep -v '^$'           # 删除空行
         )
         
-        # 分割规则并调试输出
-        IFS=',' read -ra RULES <<< "$CLEAN_RULES"
-        echo "⛳ 原始规则解析结果："
-        printf " - %s\n" "${RULES[@]}"
-        
-        # 生成处理用变量
         echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
-        printf "%s\n" "${RULES[@]}" >> $GITHUB_ENV
+        echo "$CLEANED_RULES" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
 
     - name: Login Docker Hub
@@ -40,73 +34,68 @@ jobs:
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Process images
+      env:
+        DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}  # 关键修复点！！！！
       run: |
         IFS=$'\n'
         for rule in $SYNC_RULES; do
           [[ -z "$rule" ]] && continue
 
-          # 安全分割规则（新增错误检测）
-          if [[ "$rule" != *"="* ]]; then
-            echo "⚠️ 无效规则格式：$rule，跳过处理"
+          echo "=== 当前规则：$rule ==="
+
+          # 安全分割规则
+          if ! IFS="=" read -r src_image target_part <<< "$rule"; then
+            echo "⚠️ 规则格式错误，跳过"
             continue
           fi
-          
-          src_image=$(cut -d= -f1 <<< "$rule" | xargs)
-          target_part=$(cut -d= -f2- <<< "$rule" | xargs)
 
-          echo "🔍 处理规则：$src_image → $target_part"
-
-          # 补全目标信息（关键修正）
-          target_user="${{ secrets.DOCKERHUB_USERNAME }}"
+          # 解码目标结构
           target_tag="latest"
-          
-          # 处理标签
           if [[ "$target_part" == *":"* ]]; then
             target_tag="${target_part##*:}"
             repo_part="${target_part%:*}"
           else
             repo_part="$target_part"
           fi
-          
-          # 处理命名空间
-          if [[ "$repo_part" == *"/*" ]]; then
-            echo "❌ 无效的命名空间格式：$repo_part"
-            continue
-          elif [[ "$repo_part" == *"/"* ]]; then
+
+          # 命名空间处理强化逻辑
+          if [[ "$repo_part" == *"/"* ]]; then
             target_user="${repo_part%%/*}"
             target_image="${repo_part#*/}"
           else
+            target_user="$DOCKERHUB_USER"  # 使用环境变量！！！
             target_image="$repo_part"
           fi
-          
+
           final_target="${target_user}/${target_image}:${target_tag}"
-          
-          # 验证目标格式
-          if [[ ! "$final_target" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+$ ]]; then
-            echo "❌ 无效的目标镜像格式：$final_target"
+
+          # 镜像格式终检
+          if ! [[ "$final_target" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*(:[a-zA-Z0-9_.-]+)?$ ]]; then
+            echo "❌ 不合法的镜像格式："$final_target""
             continue
           fi
 
-          # 同步流程
-          echo "🔄 同步任务：$src_image ⇒ $final_target"
+          echo "🔄 同步 [ $src_image ] → [ $final_target ]"
+
+          # 执行同步流程
           if ! docker pull -q "$src_image"; then
-            echo "❌ 无法拉取源镜像"
+            echo "❌ 源镜像拉取失败"
             continue
           fi
-          
-          src_id=$(docker inspect --format '{{.Id}}' "$src_image")
+
           if docker pull -q "$final_target" 2>/dev/null; then
-            target_id=$(docker inspect --format '{{.Id}}' "$final_target")
+            need_push=false
           else
-            target_id="missing"
+            need_push=true
           fi
-          
-          if [[ "$src_id" != "$target_id" ]]; then
-            echo "🚀 检测到更新，开始同步..."
-            docker tag "$src_image" "$final_target"
-            docker push "$final_target"
+
+          # 更新检查（优化ID比较）
+          if $need_push || [[ $(docker inspect -f '{{.Id}}' "$src_image" 2>/dev/null) != $(docker inspect -f '{{.Id}}' "$final_target" 2>/dev/null) ]]; then
+            docker tag "$src_image" "$final_target" &&
+            docker push "$final_target" &&
+            echo "✅ 同步成功" || echo "❌ 推送失败"
           else
-            echo "✅ 镜像已是最新"
+            echo "✅ 已是最新无需同步"
           fi
 
           echo "---------------------------------------"
