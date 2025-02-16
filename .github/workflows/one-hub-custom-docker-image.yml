@@ -79,7 +79,7 @@ jobs:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
     needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
+    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}  # 修正条件判断
     
     steps:
       - name: 设置指定版本仓库
@@ -103,7 +103,7 @@ jobs:
           driver-opts: |
             image=moby/buildkit:master
             network=host
-          config-inline: |
+          buildkitd-config-inline: |  # 修正参数名称
             [worker.oci]
               max-parallelism = 4
             [registry."docker.io"]
@@ -158,13 +158,12 @@ jobs:
           COMMIT_DATE=$(git log -1 --format=%cs)
           TAG="${COMMIT_DATE}-${SHORT_SHA}"
 
-          echo "镜像标签为: $TAG"
-          docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
-          
-          echo "推送镜像到Docker Hub..."
-          docker push $IMAGE_NAME:$TAG
-          docker push $IMAGE_NAME:latest
-          
+          docker buildx build \
+            --push \
+            --platform linux/amd64,linux/arm64 \
+            -t $IMAGE_NAME:$TAG \
+            -t $IMAGE_NAME:latest .
+
           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
           echo "镜像推送完成"
 
@@ -189,7 +188,7 @@ jobs:
               **提交信息:** {2}
               **提交作者:** {3}
               **提交时间:** {4}
-              **镜像地址:** [uptime-kuma](https://github.com/louislam/uptime-kuma)',
+              **镜像地址:** [点击查看](https://hub.docker.com/r/{5}/uptime-kuma/tags)',
               env.BUILD_TIME,
               env.IMAGE_TAG, 
               needs.Check-Update.outputs.last_commit_msg,
