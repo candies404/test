@@ -79,7 +79,7 @@ jobs:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
     needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated != 'true' }}
+    if: ${{ needs.Check-Update.outputs.repo_updated == 'true' }}
     
     steps:
       - name: 设置指定版本仓库 ✅ 增加持久化路径
