@@ -1,0 +1,43 @@
+name: uptime-kuma 构建并推送镜像
+
+on:
+  #  schedule:
+  #    - cron: '0 0 * * *' # 每天的凌晨 0:00 执行一次，即中国早上8点
+  workflow_dispatch: # 手动触发
+
+jobs:
+  Uptime-Kuma-Build-and-Push-Docker-Image:
+    name: 'Uptime Kuma 构建Docker 镜像'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 设置仓库
+        uses: actions/checkout@v4
+        with:
+          repository: louislam/uptime-kuma
+          path: uptime-kuma
+          fetch-depth: 0
+
+      - name: 检查 Docker Hub 最新镜像
+        id: check_docker_hub
+        run: |
+          cd uptime-kuma
+          CURRENT_SHA=$(git rev-parse --short HEAD)
+          echo "CURRENT_SHA值为：$CURRENT_SHA"
+          # 获取 Docker Hub 上第二新的标签（通常是最新的非 latest 标签）
+          LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/" | jq -r '.results[1].name')
+          echo "LATEST_TAG值为：$LATEST_TAG"
+          if [[ $LATEST_TAG == *"$CURRENT_SHA"* ]]; then
+            echo "REPO_UPDATED=false" >> $GITHUB_ENV
+            
+            echo "Docker Hub 已有最新 SHA 的镜像。无需更新。"
+          else
+            echo "REPO_UPDATED=true" >> $GITHUB_ENV
+            echo "检测到新的提交，需要构建新镜像"
+            LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+            LAST_COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
+            LAST_COMMIT_DATE=$(TZ='Asia/Shanghai' date -d "@$(git log -1 --format=%ct)" '+%Y-%m-%d %H:%M:%S')
+            echo "LAST_COMMIT_MSG=$LAST_COMMIT_MSG" >> $GITHUB_ENV
+            echo "LAST_COMMIT_AUTHOR=$LAST_COMMIT_AUTHOR" >> $GITHUB_ENV
+            echo "LAST_COMMIT_DATE=$LAST_COMMIT_DATE" >> $GITHUB_ENV
+          fi
