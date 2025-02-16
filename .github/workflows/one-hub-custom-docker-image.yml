@@ -155,36 +155,32 @@ jobs:
           hitokoto: 'false'
           title: ${{ steps.build_push.outcome == 'success' && '✅ uptime-kuma 构建成功' || '❌ uptime-kuma 构建失败' }}
           content: |
-            ${{ 
-              format('{0}', 
-                (steps.build_push.outcome == 'success' &&
-                  format('
-                    ### 🚀 新版本镜像已发布
-                    **发布时间:** {0}
-                    **镜像标签:** {1}
-                    **提交信息:** {2}
-                    **提交作者:** {3}
-                    **提交时间:** {4}
-                    **镜像地址:** [点击查看](https://hub.docker.com/r/{5}/uptime-kuma/tags)',
-                    env.BUILD_TIME,
-                    env.IMAGE_TAG,
-                    needs.Check-Update.outputs.last_commit_msg,
-                    needs.Check-Update.outputs.last_commit_author,
-                    needs.Check-Update.outputs.last_commit_date,
-                    secrets.DOCKERHUB_USERNAME
-                  )
-                ) || (
-                  format('
-                    ### 🔥 构建失败
-                    **提交信息:** {0}
-                    **失败原因:** {1}
-                    **构建日志:** [查看详情]({2}/{3}/actions/runs/{4})',
-                    needs.Check-Update.outputs.last_commit_msg,
-                    '依赖安装失败或构建过程错误',
-                    github.server_url,
-                    github.repository,
-                    github.run_id
-                  )
-                )
-              )
-            }}
+            ${{ format('{0}', 
+              steps.build_push.outcome == 'success' 
+              && format('
+              ### 🚀 新版本镜像已发布
+              **发布时间:** {0}
+              **镜像标签:** {1}
+              **提交信息:** {2}
+              **提交作者:** {3}
+              **提交时间:** {4}
+              **镜像地址:** [点击查看](https://hub.docker.com/r/{5}/uptime-kuma/tags)',
+              env.BUILD_TIME,
+              env.IMAGE_TAG, 
+              needs.Check-Update.outputs.last_commit_msg,
+              needs.Check-Update.outputs.last_commit_author,
+              needs.Check-Update.outputs.last_commit_date,
+              secrets.DOCKERHUB_USERNAME)
+              
+              || format('
+              ### 🔥 构建失败需处理
+              **失败时间:** {0}
+              **最后提交:** {1}
+              **提交作者:** {2}
+              **提交时间:** {3}
+              **跟踪仓库:** [uptime-kuma](https://github.com/louislam/uptime-kuma)',
+              env.BUILD_TIME,
+              needs.Check-Update.outputs.last_commit_msg,
+              needs.Check-Update.outputs.last_commit_author,
+              needs.Check-Update.outputs.last_commit_date)
+            ) }}
