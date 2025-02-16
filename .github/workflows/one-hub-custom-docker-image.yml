@@ -31,8 +31,8 @@ jobs:
           main_timestamp=$(jq -r '.commit.committer.date' <<< "$main_commit")
           echo "one-hub 仓库 SHA: $main_sha (时间: $main_timestamp)"
           
-          # 获取 TableRow 的历史版本
-          echo "获取 TableRow 历史版本..."
+          # 获取 TableRow 信息
+          echo "获取 TableRow 信息"
           table_commit=$(curl -fsS "https://api.github.com/repos/MartialBE/one-hub/commits?path=web/src/views/Channel/component/TableRow.jsx&until=$main_timestamp")
           table_sha=$(jq -r 'if length>0 then .[0].sha[0:7] else "null" end' <<< "$table_commit")
           echo "TableRow SHA: $table_sha"
