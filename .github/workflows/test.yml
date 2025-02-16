@@ -15,16 +15,22 @@ jobs:
     - name: Setup sync rules
       id: setup
       run: |
-        # 从环境变量读取映射规则
-        RAW_MAPPINGS="${{ vars.SYNC_MAPPINGS }}"
+        # 清洁化输入数据（关键修正步骤）
+        CLEAN_RULES=$(
+          echo "${{ vars.SYNC_MAPPINGS }}" |
+          tr -d '\n' |    # 移除换行符
+          sed 's/, */,/g' |  # 标准化分隔符
+          sed 's/^,//; s/,$//' # 去除首尾逗号
+        )
         
-        # 转换为数组并去重
-        IFS=',' read -ra RULES <<< "${RAW_MAPPINGS//, /,}"
-        UNIQUE_RULES=$(printf "%s\n" "${RULES[@]}" | sort -u)
+        # 分割规则并调试输出
+        IFS=',' read -ra RULES <<< "$CLEAN_RULES"
+        echo "⛳ 原始规则解析结果："
+        printf " - %s\n" "${RULES[@]}"
         
         # 生成处理用变量
         echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
-        echo "$UNIQUE_RULES" >> $GITHUB_ENV
+        printf "%s\n" "${RULES[@]}" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
 
     - name: Login Docker Hub
@@ -39,50 +45,68 @@ jobs:
         for rule in $SYNC_RULES; do
           [[ -z "$rule" ]] && continue
 
-          # 分离源和目标部分
-          src_image=$(cut -d= -f1 <<< "$rule")
-          target_part=$(cut -d= -f2 <<< "$rule")
-
-          echo "🗃️ 处理规则：$src_image → $target_part"
-
-          # 拆分目标组件
-          if [[ "$target_part" == *":"* ]]; then
-            target_tag=${target_part##*:}
-            target_repo=${target_part%:*}
-          else
-            target_tag="latest"
-            target_repo=$target_part
+          # 安全分割规则（新增错误检测）
+          if [[ "$rule" != *"="* ]]; then
+            echo "⚠️ 无效规则格式：$rule，跳过处理"
+            continue
           fi
-
-          if [[ "$target_repo" == *"/"* ]]; then
-            target_user=${target_repo%%/*}
-            target_image_name=${target_repo#*/}
-          else
-            target_user="${{ secrets.DOCKERHUB_USERNAME }}"
-            target_image_name=$target_repo
-          fi
-
-          target_image="${target_user}/${target_image_name}:${target_tag}"
-
-          # 执行同步流程
-          echo "🔎 源镜像：$src_image"
-          echo "🎯 目标镜像：$target_image"
           
-          docker pull -q "$src_image"
-          src_id=$(docker inspect --format '{{.Id}}' "$src_image")
+          src_image=$(cut -d= -f1 <<< "$rule" | xargs)
+          target_part=$(cut -d= -f2- <<< "$rule" | xargs)
 
-          if docker pull -q "$target_image" 2>/dev/null; then
-            target_id=$(docker inspect --format '{{.Id}}' "$target_image")
+          echo "🔍 处理规则：$src_image → $target_part"
+
+          # 补全目标信息（关键修正）
+          target_user="${{ secrets.DOCKERHUB_USERNAME }}"
+          target_tag="latest"
+          
+          # 处理标签
+          if [[ "$target_part" == *":"* ]]; then
+            target_tag="${target_part##*:}"
+            repo_part="${target_part%:*}"
           else
-            target_id="not_exist"
+            repo_part="$target_part"
+          fi
+          
+          # 处理命名空间
+          if [[ "$repo_part" == *"/*" ]]; then
+            echo "❌ 无效的命名空间格式：$repo_part"
+            continue
+          elif [[ "$repo_part" == *"/"* ]]; then
+            target_user="${repo_part%%/*}"
+            target_image="${repo_part#*/}"
+          else
+            target_image="$repo_part"
+          fi
+          
+          final_target="${target_user}/${target_image}:${target_tag}"
+          
+          # 验证目标格式
+          if [[ ! "$final_target" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+$ ]]; then
+            echo "❌ 无效的目标镜像格式：$final_target"
+            continue
           fi
 
-          if [[ "$src_id" != "$target_id" ]]; then
-            echo "🚀 发现更新，正在同步..."
-            docker tag "$src_image" "$target_image"
-            docker push "$target_image"
+          # 同步流程
+          echo "🔄 同步任务：$src_image ⇒ $final_target"
+          if ! docker pull -q "$src_image"; then
+            echo "❌ 无法拉取源镜像"
+            continue
+          fi
+          
+          src_id=$(docker inspect --format '{{.Id}}' "$src_image")
+          if docker pull -q "$final_target" 2>/dev/null; then
+            target_id=$(docker inspect --format '{{.Id}}' "$final_target")
           else
-            echo "✅ 已经是最新版本"
+            target_id="missing"
+          fi
+          
+          if [[ "$src_id" != "$target_id" ]]; then
+            echo "🚀 检测到更新，开始同步..."
+            docker tag "$src_image" "$final_target"
+            docker push "$final_target"
+          else
+            echo "✅ 镜像已是最新"
           fi
 
           echo "---------------------------------------"
