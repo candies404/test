@@ -55,28 +55,16 @@ jobs:
           SYNC_EXECUTED=0
           SYNC_SKIPPED=0
 
-          # 增强架构解析函数
-          analyze_platforms() {
-            local image=$1
-            local output
-            output=$(docker buildx imagetools inspect "$image" 2>&1) || {
-              [[ "$output" =~ (no such manifest|not found) ]] && echo "NON_EXISTENT"
-              return 1
-            }
-            echo "$output" | awk '
-              /^Platform:/ {
-                split($0, parts, /: /);
-                gsub(/, /, "\n", parts[2]);
-                print parts[2]
-              }' | sed '
-                /^unknown\/unknown/d;
-                /^$/d;
-                s/^[[:space:]]*//;
-                s/[[:space:]]*$//' | sort -u
+          # 架构信息提取函数
+          get_platforms() {
+            echo "$1" | sed -E 's/Platform: //g; s/, /\n/g' | tr -d ' ' \
+              | grep -vE '^unknown\/unknown$' | awk 'NF' | sort -u
           }
 
-          count_platforms() {
-            echo "$1" | awk 'BEGIN{count=0} NF {count++} END{print count}'
+          # 清单类型检测函数
+          is_multiarch() {
+            local raw_input="$1"
+            grep 'application/vnd.oci.image.index.v1+json' <<< "$raw_input" >/dev/null
           }
 
           while IFS= read -r rule; do
@@ -97,7 +85,7 @@ jobs:
               src_name="$src_image"
             fi
 
-            # 处理目标标签
+            # 确保目标spec包含正确标签
             if [[ "$target_spec" == *":"* ]]; then
               target_tag="${target_spec##*:}"
               target_base="${target_spec%:*}"
@@ -106,96 +94,74 @@ jobs:
               target_tag="$src_tag"
             fi
 
-            # 合成目标spec
+            # 自动补全用户前缀并合成最终spec
             final_spec="$target_base"
-            [[ "$final_spec" != */* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
+            [[ ! "$final_spec" == *"/"* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
             final_spec+=":$target_tag"
 
-            #======= 源镜像分析 =======#
-            echo "🔍 解析源镜像架构..."
-            src_platforms=$(analyze_platforms "$src_image")
-            if [[ "$src_platforms" == "NON_EXISTENT" ]]; then
-              echo "❌ 源镜像不存在: $src_image"
-              failed_rules+=("$rule")
-              continue
-            fi
-            src_count=$(count_platforms "$src_platforms")
-            echo "🔎 源镜像架构 ($src_count 种)"
-            echo "$src_platforms" | sed 's/^/  ➜ /'
-            (( src_count == 0 )) && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
-
-            #======= 目标镜像分析 =======#
-            echo "✳️ 分析目标镜像: $final_spec"
-            target_platforms=$(analyze_platforms "$final_spec" || true)
-            
-            if [[ "$target_platforms" == "NON_EXISTENT" ]]; then
-              echo "📦 目标镜像不存在"
-              target_count=0
-              target_platforms=""
+            #======= 架构分析 =======#
+            raw_src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null || true)
+            if is_multiarch "$raw_src_platforms"; then
+              src_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_src_platforms")")
             else
-              target_count=$(count_platforms "$target_platforms")
-              echo "📦 目标镜像架构 ($target_count 种)"
-              echo "$target_platforms" | sed 's/^/  ➜ /'
+              # 处理遗留镜像格式
+              src_arch=$(grep 'Architecture:' <<< "$raw_src_platforms" | awk '{print $2}' | tr -d ',')
+              src_os=$(grep 'OS:' <<< "$raw_src_platforms" | awk '{print $2}' | tr -d ',')
+              src_platforms="${src_os}/${src_arch}"
             fi
+
+            echo "🔎 源镜像架构 ($(wc -l <<< "$src_platforms") 种)" && sed 's/^/  ➜ /' <<< "$src_platforms"
+            [[ -z "$src_platforms" ]] && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
+            
+            #======= 处理目标镜像 =======#
+            echo "✳️ 最终目标镜像: $final_spec"
+            raw_target_platforms=$(docker buildx imagetools inspect "$final_spec" 2>/dev/null || true)
+            target_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_target_platforms")")
+            echo "📦 目标镜像架构 ($(wc -l <<< "$target_platforms") 种)" && sed 's/^/  ➜ /' <<< "$target_platforms"
 
             #======= 同步策略 =======#
-            if (( target_count == 0 )); then
+            if [[ -z "$target_platforms" ]]; then
               echo "🆕 初始化镜像..."
-              if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image"; then
-                echo "❌ 初始化失败"
-                failed_rules+=("$rule")
-                continue
-              fi
+              timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image"
               SYNC_EXECUTED=$((SYNC_EXECUTED+1))
             else
-              missing_platforms=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$target_platforms" | sort))
-              missing_count=$(count_platforms "$missing_platforms")
-              if (( missing_count > 0 )); then
-                echo "🔄 差异架构 ($missing_count 种)"
-                echo "$missing_platforms" | sed 's/^/  ➤ /'
-                if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append; then
-                  echo "⚡ 增量失败，尝试强制覆盖"
-                  if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force; then
-                    echo "❌ 同步彻底失败"
-                    failed_rules+=("$rule")
-                    continue
-                  fi
-                fi
+              missing_platforms=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$target_platforms"))
+              if [[ -n "$missing_platforms" ]]; then
+                echo "🔄 差异架构 ($(wc -l <<< "$missing_platforms") 种)" && sed 's/^/  ➤ /' <<< "$missing_platforms"
+                timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append || {
+                  echo "⚡ 增量失败，尝试强制覆盖"; 
+                  timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force;
+                }
                 SYNC_EXECUTED=$((SYNC_EXECUTED+1))
               else
-                echo "⏭️ 已保持最新"
+                echo "⏭️ 已保持最新，跳过同步"
                 SYNC_SKIPPED=$((SYNC_SKIPPED+1))
               fi
             fi
 
-            #======= 验证阶段 =======#
-            echo "✅ 执行最终验证..."
-            final_platforms=$(analyze_platforms "$final_spec" || true)
-            final_count=$(count_platforms "$final_platforms")
-            missing_final=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort))
-            
-            if (( final_count < src_count )) || [[ -n "$missing_final" ]]; then
-              echo "❌ 验证失败（缺少 $((src_count - final_count)) 种架构）"
-              echo "$missing_final" | sed 's/^/  ▸ /'
+            #======= 结果验证 =======#
+            final_platforms=$(get_platforms "$(docker buildx imagetools inspect "$final_spec" 2>/dev/null | grep 'Platform:')")
+            missing_check=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$final_platforms"))
+            if [[ -n "$missing_check" ]]; then
+              echo "❌ 验证失败，缺少架构：" && sed 's/^/  ▸ /' <<< "$missing_check"
               failed_rules+=("$rule")
             else
-              echo "✅ 验证通过"
+              echo "✅ 验证通过" 
               docker buildx imagetools inspect "$final_spec" | grep -E 'Platform:|Size:' | sed 's/^/  ✨ /'
             fi
+
             echo "─────────────────────────────────────"
           done <<< "$SYNC_RULES"
 
-          #======= 报告生成 =======#
-          total_rules=$(count_platforms "$SYNC_RULES")
-          success_count=$(($SYNC_EXECUTED + $SYNC_SKIPPED))
+          #======= 可视化报告 =======#
+          total_rules=$(wc -l <<< "$SYNC_RULES" | tr -d ' ')
           echo "📊=== 同步报告 ==="
           echo "🔢 处理总数 | $total_rules"
           echo "🟢 成功同步 | $SYNC_EXECUTED"
           echo "🟡 跳过同步 | $SYNC_SKIPPED"
-          echo "🔴 同步失败 | $(($total_rules - $success_count))"
-          
-          if (( ${#failed_rules[@]} > 0 )); then
-            echo "🔥 失败规则："
+          echo "🔴 同步失败 | ${#failed_rules[@]}"
+          if ((${#failed_rules[@]} > 0)); then
+            echo "🔥 失败详情："
             printf "  ‼️ %s\n" "${failed_rules[@]}"
             exit 1
           fi
