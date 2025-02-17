@@ -73,10 +73,11 @@ jobs:
             grep 'Platform:' | \
             sed -E 's/Platform: //g; s/, /\n/g' | \
             sed -e '/^unknown\/unknown$/d' -e 's/^ *//; s/ *$//' | \
-            sort -u)
+            sort -u | grep -v '^$')  # 新增空行过滤
           
-          if [ -z "$src_platforms" ] || grep -q "unknown/unknown" <<< "$src_platforms"; then
-            echo "❌ 获取源镜像架构失败或存在未知平台"
+          # 修改条件判断
+          if [ -z "$src_platforms" ]; then
+            echo "❌ 获取源镜像架构失败"
             failed_rules+=("$rule")
             echo "─────────────────────────────────────"
             continue
