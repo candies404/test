@@ -66,45 +66,58 @@ jobs:
           fi
           [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
 
-          # === 增强架构检测 ===
+          # === 增强架构信息打印 ===
           echo "=== 架构检查 ==="
           echo "获取源镜像架构：$src_image"
-          src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null | \
-            grep 'Platform:' | \
-            sed -E 's/Platform: //g; s/, /\n/g' | \
-            sed -e '/^unknown\/unknown$/d' -e 's/^ *//; s/ *$//' | \
-            sort -u | grep -v '^$')  # 新增空行过滤
           
-          # 修改条件判断
+          # 提取并打印原始平台信息
+          raw_src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null | grep 'Platform:')
+          echo "源镜像原始平台信息："
+          echo "$raw_src_platforms"
+          
+          # 处理平台数据（强制排除unknown空间）
+          src_platforms=$(echo "$raw_src_platforms" | \
+            sed -E 's/Platform: //g; s/, /\n/g' | \
+            tr -d ' ' | \
+            sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
+            sort -u | \
+            awk 'NF') # 最后过滤空行
+          
+          echo "处理后的源镜像架构 ($(echo "$src_platforms" | wc -l) 种）："
+          printf '  - %s\n' $src_platforms
+          
           if [ -z "$src_platforms" ]; then
             echo "❌ 获取源镜像架构失败"
             failed_rules+=("$rule")
-            echo "─────────────────────────────────────"
             continue
           fi
 
-          echo "检查目标镜像是否存在：$target_spec"
-          target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | \
-            grep 'Platform:' | \
+          # 目标镜像处理同理
+          echo "检查目标镜像：$target_spec"
+          raw_target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | grep 'Platform:')
+          echo "目标镜像原始平台信息："
+          echo "$raw_target_platforms"
+          
+          target_platforms=$(echo "$raw_target_platforms" | \
             sed -E 's/Platform: //g; s/, /\n/g' | \
-            sed -e '/^unknown\/unknown$/d' -e 's/^ *//; s/ *$//' | \
-            sort -u)
+            tr -d ' ' | \
+            sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
+            sort -u | \
+            awk 'NF')
+          
+          echo "处理后的目标镜像架构 ($(echo "$target_platforms" | wc -l) 种）："
+          printf '  - %s\n' $target_platforms
 
-          # 使用wc -l准确统计平台数
-          SRC_PLATFORM_COUNT=$(echo "$src_platforms" | wc -l | tr -d ' ')
-          TARGET_PLATFORM_COUNT=$(echo "$target_platforms" | wc -l | tr -d ' ')
-
-          all_platforms_present=true
+          # === 平台比对逻辑 ===
           missing_platforms=()
           while read -r platform; do
-            if [[ -n "$platform" ]] && ! echo "$target_platforms" | grep -qxF "$platform"; then
-              all_platforms_present=false
+            if ! grep -qxF "$platform" <<< "$target_platforms"; then
               missing_platforms+=("$platform")
             fi
           done <<< "$src_platforms"
 
-          if [ "$all_platforms_present" = true ] && [ "$TARGET_PLATFORM_COUNT" -ge "$SRC_PLATFORM_COUNT" ]; then
-            echo "✅ 目标已包含所有架构（共 $SRC_PLATFORM_COUNT 种），跳过同步"
+          if [ ${#missing_platforms[@]} -eq 0 ] && [ -n "$target_platforms" ]; then
+            echo "✅ 架构匹配：目标包含全部 $(echo "$src_platforms" | wc -l) 种架构"
             SUCCESS_COUNT=$((SUCCESS_COUNT+1))
             echo "─────────────────────────────────────"
             continue
@@ -114,8 +127,9 @@ jobs:
             fi
           fi
           # === 架构检查结束 ===
-
-          echo "🔄 同步 $src_image → $target_spec"
+          
+          # === 同步逻辑 ===
+          echo "🔄 开始同步（缺失架构数：${#missing_platforms[@]}）"
           timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
           
           if (( $? != 0 )); then
