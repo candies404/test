@@ -69,9 +69,29 @@ jobs:
             src_image="${rule%%=*}"
             target_spec="${rule#*=}"
             target_spec="${target_spec/#docker.io\//}"
-            [[ "$target_spec" != *":"* ]] && target_spec+=":${src_image#*:}"
-            [[ "$target_spec" == *":"* ]] || target_spec+=":latest"
-            [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
+
+            # 处理源镜像标签
+            if [[ "$src_image" == *":"* ]]; then
+              src_tag="${src_image##*:}"
+              src_name="${src_image%:*}"
+            else
+              src_tag="latest"
+              src_name="$src_image"
+            fi
+
+            # 确保目标spec包含正确标签
+            if [[ "$target_spec" == *":"* ]]; then
+              target_tag="${target_spec##*:}"
+              target_base="${target_spec%:*}"
+            else
+              target_base="$target_spec"
+              target_tag="$src_tag"
+            fi
+
+            # 自动补全用户前缀并合成最终spec
+            final_spec="$target_base"
+            [[ ! "$final_spec" == *"/"* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
+            final_spec+=":$target_tag"
 
             #======= 架构分析 =======#
             raw_src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null || true)
@@ -79,22 +99,24 @@ jobs:
             echo "🔎 源镜像架构 ($(wc -l <<< "$src_platforms") 种)" && sed 's/^/  ➜ /' <<< "$src_platforms"
             [[ -z "$src_platforms" ]] && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
 
-            raw_target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null || true)
+            #======= 处理目标镜像 =======#
+            echo "✳️ 最终目标镜像: $final_spec"
+            raw_target_platforms=$(docker buildx imagetools inspect "$final_spec" 2>/dev/null || true)
             target_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_target_platforms")")
             echo "📦 目标镜像架构 ($(wc -l <<< "$target_platforms") 种)" && sed 's/^/  ➜ /' <<< "$target_platforms"
 
             #======= 同步策略 =======#
             if [[ -z "$target_platforms" ]]; then
               echo "🆕 初始化镜像..."
-              timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
+              timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image"
               SYNC_EXECUTED=$((SYNC_EXECUTED+1))
             else
               missing_platforms=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$target_platforms"))
               if [[ -n "$missing_platforms" ]]; then
                 echo "🔄 差异架构 ($(wc -l <<< "$missing_platforms") 种)" && sed 's/^/  ➤ /' <<< "$missing_platforms"
-                timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image" --append || {
+                timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append || {
                   echo "⚡ 增量失败，尝试强制覆盖"; 
-                  timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image" --force;
+                  timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force;
                 }
                 SYNC_EXECUTED=$((SYNC_EXECUTED+1))
               else
@@ -104,14 +126,14 @@ jobs:
             fi
 
             #======= 结果验证 =======#
-            final_platforms=$(get_platforms "$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | grep 'Platform:')")
+            final_platforms=$(get_platforms "$(docker buildx imagetools inspect "$final_spec" 2>/dev/null | grep 'Platform:')")
             missing_check=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$final_platforms"))
             if [[ -n "$missing_check" ]]; then
               echo "❌ 验证失败，缺少架构：" && sed 's/^/  ▸ /' <<< "$missing_check"
               failed_rules+=("$rule")
             else
               echo "✅ 验证通过" 
-              docker buildx imagetools inspect "$target_spec" | grep -E 'Platform:|Size:' | sed 's/^/  ✨ /'
+              docker buildx imagetools inspect "$final_spec" | grep -E 'Platform:|Size:' | sed 's/^/  ✨ /'
             fi
             echo "─────────────────────────────────────"
           done <<< "$SYNC_RULES"
