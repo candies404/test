@@ -108,6 +108,9 @@ jobs:
             target_id=""
           fi
 
+          echo "源镜像ID: $src_id"   
+          echo "目标镜像ID: $target_id"  
+
           # 判断是否需要同步
           if [[ "$src_id" != "$target_id" ]]; then
             echo "🚀 检测到变更，开始同步..."
