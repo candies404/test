@@ -7,7 +7,7 @@ on:
 
 jobs:
   docker-sync:
-    runs-on: ubuntu-latest  # 运行环境
+    runs-on: ubuntu-latest
     steps:
     - name: 检出代码
       uses: actions/checkout@v4
@@ -57,23 +57,24 @@ jobs:
           [[ -z "$rule" ]] && continue
           echo "=== 处理规则: $rule ==="
           
-          # 使用参数替换增强容错性
+          # 变量解析部分保持不变
           src_image="${rule%%=*}"
           target_spec="${rule#*=}"
-          target_spec="${target_spec/#docker.io\//}"  # 自动去除冗余registry
-
-          # 智能补全逻辑
+          target_spec="${target_spec/#docker.io\//}"
           if [[ "$target_spec" != *":"* ]]; then
             target_spec+=":$(awk -F':' '{print $2}' <<<"$src_image" | grep -v ^$ || echo latest)"
           fi
           [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
 
-          # === 新增架构检查逻辑 ===
+          # === 新版架构检查逻辑 ===
           echo "=== 架构检查 ==="
-          
-          # 获取源镜像支持的平台架构
           echo "获取源镜像架构：$src_image"
-          src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null | grep 'Platform:' | sed -E 's/Platform: //g' | sort -u)
+          src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null | \
+            grep 'Platform:' | \
+            sed -E 's/Platform: //g; s/, /\n/g' | \
+            sed 's/^ *//; s/ *$//' | \
+            sort -u)
+          
           if [ -z "$src_platforms" ]; then
             echo "❌ 获取源镜像架构失败"
             failed_rules+=("$rule")
@@ -81,51 +82,59 @@ jobs:
             continue
           fi
 
-          # 获取目标镜像支持的平台架构
           echo "检查目标镜像是否存在：$target_spec"
-          target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | grep 'Platform:' | sed -E 's/Platform: //g' | sort -u)
-          
-          # 检查目标是否包含所有源架构
+          target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | \
+            grep 'Platform:' | \
+            sed -E 's/Platform: //g; s/, /\n/g' | \
+            sed 's/^ *//; s/ *$//' | \
+            sort -u)
+
+          # 调试日志（可注释）
+          echo "源镜像架构列表："
+          echo "$src_platforms"
+          echo "目标镜像架构列表："
+          echo "$target_platforms"
+
           all_platforms_present=true
+          missing_platforms=()
           while read -r platform; do
             if ! echo "$target_platforms" | grep -qxF "$platform"; then
               all_platforms_present=false
-              break
+              missing_platforms+=("$platform")
             fi
           done <<< "$src_platforms"
 
-          # 如果目标包含所有架构则跳过同步
           if [ "$all_platforms_present" = true ] && [ -n "$target_platforms" ]; then
-            echo "✅ 目标已包含所有架构：$(echo $src_platforms)"
-            docker buildx imagetools inspect "$target_spec" | \
-            grep -E 'Platform:|Size:' | \
-            grep -v 'Platform:.*unknown/unknown' || true
+            echo "✅ 目标已包含所有架构（共 ${#src_platforms[@]} 种），跳过同步"
             echo "─────────────────────────────────────"
             continue
+          else
+            if [ "${#missing_platforms[@]}" -gt 0 ]; then
+              echo "❗缺失架构：${missing_platforms[*]}"
+            fi
+            echo "ℹ️ 需要同步：目标镜像$( [ -z "$target_platforms" ] && echo '不存在' || echo '缺少部分架构' )"
           fi
-          # === 新增逻辑结束 ===
+          # === 架构检查结束 ===
 
-          # 增加同步超时控制
+          # 同步逻辑保持不变
           echo "🔄 同步 $src_image → $target_spec"
           timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
           
-          # 收集同步结果
           if (( $? != 0 )); then
             failed_rules+=("$rule")
             echo "❌ 同步失败: $rule"
             docker buildx imagetools inspect "$src_image" || true
           else
             echo "✅ 同步成功"
-            # 显示过滤后的平台信息
             docker buildx imagetools inspect "$target_spec" | \
-            grep -E 'Platform:|Size:' | \
-            grep -v 'Platform:.*unknown/unknown'
+              grep -E 'Platform:|Size:' | \
+              grep -v 'Platform:.*unknown/unknown'
           fi
           
           echo "─────────────────────────────────────"
         done <<< "$SYNC_RULES"
 
-        # 输出最终报告
+        # 最终报告保持原样
         echo "=== 同步结果报告 ==="
         echo "成功: $(( $(wc -l <<<"$SYNC_RULES") - ${#failed_rules[@]} )) 条"
         if (( ${#failed_rules[@]} > 0 )); then
