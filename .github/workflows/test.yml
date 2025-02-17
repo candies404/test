@@ -1,13 +1,13 @@
 name: 镜像同步工作流
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * *'
+  workflow_dispatch:  # 手动触发
+  schedule:  # 定时任务
+    - cron: '0 2 * * *'  # 每日UTC 2点执行
 
 jobs:
   docker-sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 运行环境
     steps:
     - name: 检出代码
       uses: actions/checkout@v4
@@ -26,7 +26,6 @@ jobs:
         echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
         echo "$CLEANED_RULES"
 
-    
     - name: 登录DockerHub
       uses: docker/login-action@v3
       with:
@@ -80,7 +79,10 @@ jobs:
             docker buildx imagetools inspect "$src_image" || true
           else
             echo "✅ 同步成功"
-            docker buildx imagetools inspect "$target_spec" | grep -E 'Platform:|Size:'
+            # 增加平台过滤逻辑（关键修改点）
+            docker buildx imagetools inspect "$target_spec" | \
+            grep -E 'Platform:|Size:' | \
+            grep -v 'Platform:.*unknown/unknown'
           fi
           
           echo "─────────────────────────────────────"
