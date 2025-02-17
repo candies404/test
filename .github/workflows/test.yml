@@ -70,18 +70,18 @@ jobs:
           echo "=== 架构检查 ==="
           echo "获取源镜像架构：$src_image"
           
-          # 提取并打印原始平台信息
+          # 提取源镜像平台信息
           raw_src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null | grep 'Platform:')
           echo "源镜像原始平台信息："
           echo "$raw_src_platforms"
           
-          # 处理平台数据（强制排除unknown空间）
+          # 处理平台数据
           src_platforms=$(echo "$raw_src_platforms" | \
             sed -E 's/Platform: //g; s/, /\n/g' | \
             tr -d ' ' | \
             sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
             sort -u | \
-            awk 'NF') # 最后过滤空行
+            awk 'NF')
           
           echo "处理后的源镜像架构 ($(echo "$src_platforms" | wc -l) 种）："
           printf '  - %s\n' $src_platforms
@@ -92,7 +92,7 @@ jobs:
             continue
           fi
 
-          # 目标镜像处理同理
+          # === 目标镜像处理 ===
           echo "检查目标镜像：$target_spec"
           raw_target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | grep 'Platform:')
           echo "目标镜像原始平台信息："
@@ -108,48 +108,49 @@ jobs:
           echo "处理后的目标镜像架构 ($(echo "$target_platforms" | wc -l) 种）："
           printf '  - %s\n' $target_platforms
 
-          # === 平台比对逻辑 ===
-          missing_platforms=()
-          while read -r platform; do
-            if ! grep -qxF "$platform" <<< "$target_platforms"; then
-              missing_platforms+=("$platform")
+          # === 智能同步策略 === <--- 重要修改
+          echo "🔄 执行同步策略..."
+          if [[ -z "$target_platforms" ]]; then
+            # 目标镜像不存在，创建全新镜像
+            echo "🔧 初始化创建目标镜像..."
+            timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
+          else
+            # 目标镜像存在，追加缺失架构
+            missing_count=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$target_platforms" | sort) | wc -l)
+            if (( missing_count > 0 )); then
+              echo "🔧 检测到 $missing_count 个缺失架构，执行追加操作..."
+              timeout 300 docker buildx imagetools create --append -t "$target_spec" "$src_image"
+            else
+              echo "✅ 架构已完整，无需同步"
             fi
-          done <<< "$src_platforms"
+          fi
 
-          if [ ${#missing_platforms[@]} -eq 0 ] && [ -n "$target_platforms" ]; then
-            echo "✅ 架构匹配：目标包含全部 $(echo "$src_platforms" | wc -l) 种架构"
+          # === 结果验证 === <--- 新增验证环节
+          echo "=== 同步结果验证 ==="
+          final_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | \
+            grep 'Platform:' | \
+            sed -E 's/Platform: //g; s/, /\n/g' | \
+            tr -d ' ' | \
+            sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
+            sort -u | \
+            awk 'NF')
+          
+          missing_after_sync=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort))
+          if [ -z "$missing_after_sync" ]; then
+            echo "✅ 验证通过：目标镜像包含所有源架构"
             SUCCESS_COUNT=$((SUCCESS_COUNT+1))
-            echo "─────────────────────────────────────"
-            continue
           else
-            if [ "${#missing_platforms[@]}" -gt 0 ]; then
-              echo "❗缺失架构：${missing_platforms[*]}"
-            fi
-          fi
-          # === 架构检查结束 ===
-          
-          # === 同步逻辑 ===
-          echo "🔄 开始同步（缺失架构数：${#missing_platforms[@]}）"
-          timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
-          
-          if (( $? != 0 )); then
+            echo "❌ 验证失败：仍然缺失架构"
+            printf '  - %s\n' $missing_after_sync
             failed_rules+=("$rule")
-            echo "❌ 同步失败: $rule"
-            docker buildx imagetools inspect "$src_image" || true
-          else
-            SUCCESS_COUNT=$((SUCCESS_COUNT+1))
-            echo "✅ 同步成功"
-            docker buildx imagetools inspect "$target_spec" | \
-              grep -E 'Platform:|Size:' | \
-              sed -e '/unknown\/unknown/d'
           fi
-          
+
           echo "─────────────────────────────────────"
         done <<< "$SYNC_RULES"
 
         echo "=== 同步结果报告 ==="
-        echo "成功（含跳过）: $SUCCESS_COUNT 条"
-        echo "失败（需处理）: ${#failed_rules[@]} 条"
+        echo "成功构建镜像: $SUCCESS_COUNT 条"
+        echo "失败处理规则: ${#failed_rules[@]} 条"
         if (( ${#failed_rules[@]} > 0 )); then
           printf '失败规则列表：\n  - %s\n' "${failed_rules[@]}"
           exit 1
