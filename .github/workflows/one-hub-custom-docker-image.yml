@@ -25,14 +25,24 @@ jobs:
           # 判断是否为多架构镜像
           if echo "$OUTPUT" | grep -q '"manifests":'; then
             echo "$IMAGE 是多架构镜像"
-            # 提取并打印所有支持的架构
-            ARCHITECTURES=$(echo "$OUTPUT" | jq -r '.manifests[].platform.architecture' | sort | uniq | tr '\n' ', ')
+            # 提取并打印所有支持的架构，排除 unknown
+            ARCHITECTURES=$(echo "$OUTPUT" | jq -r '.manifests[].platform.architecture' | grep -v 'unknown' | sort | uniq | tr '\n' ', ')
             echo "支持的架构类型: ${ARCHITECTURES%, }"
           else
             echo "$IMAGE 是单架构镜像"
             # 提取单架构镜像的架构类型
             ARCHITECTURE=$(echo "$OUTPUT" | jq -r '.architecture')
-            echo "架构类型: $ARCHITECTURE"
+            if [[ "$ARCHITECTURE" == "null" || -z "$ARCHITECTURE" ]]; then
+              # 如果 architecture 字段为空，尝试从 config.digest 推断
+              CONFIG_DIGEST=$(echo "$OUTPUT" | jq -r '.config.digest')
+              if [[ "$CONFIG_DIGEST" != "null" && -n "$CONFIG_DIGEST" ]]; then
+                echo "架构类型: 未知（但存在配置层，可能是 amd64）"
+              else
+                echo "架构类型: 未知"
+              fi
+            else
+              echo "架构类型: $ARCHITECTURE"
+            fi
           fi
           echo "----------------------------------------"
         done
