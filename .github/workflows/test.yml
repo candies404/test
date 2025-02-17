@@ -15,118 +15,82 @@ jobs:
     - name: 规则预处理
       id: setup
       run: |
-        # 清理输入规则（优化空格处理）
-        CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" |
-          tr '\n' ',' |  # 换行转逗号
-          sed -E 's/[[:space:]]+//g; s/,+/ /g; s/^ | $//g' |  # 合并冗余空格和逗号
-          tr ' ' '\n' |  # 空格转回车
-          grep -v '^$'  # 过滤空行
+        CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" | 
+          tr ',' '\n' |
+          sed -E 's/[[:space:]]+//g; /^$/d' |
+          sort -u
         )
-        
-        # 将处理后的规则存入环境变量
         echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
         echo "$CLEANED_RULES" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
-        
-        # 输出调试信息
-        echo "=== 有效同步规则 ==="
+        echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
         echo "$CLEANED_RULES"
 
-    - name: 配置镜像加速器
-      run: |
-        echo '{"registry-mirrors": ["https://dockerpull.cn"]}' | sudo tee /etc/docker/daemon.json
-        sudo systemctl restart docker
-
+    
     - name: 登录DockerHub
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: 缓存 Docker 层
-      uses: actions/cache@v4
-      with:
-        path: /tmp/.buildx-cache
-        key: ${{ runner.os }}-buildx-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-
-
-    - name: 配置构建环境
+    - name: 配置高性能构建环境
       uses: docker/setup-buildx-action@v3
+      id: buildx
       with:
+        driver: docker-container
         driver-opts: |
-          image=moby/buildkit:latest
+          image=moby/buildkit:master
           network=host
         buildkitd-config-inline: |
           [registry."docker.io"]
             mirrors = ["dockerpull.cn"]
+          [worker.oci]
+            max-parallelism = 4
 
-    - name: 执行镜像处理
+    - name: 执行智能镜像同步
       env:
         DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
       run: |
-        IFS=$'\n'
-        # 提前合并拉取所有源镜像
-        for rule in $SYNC_RULES; do
-          src_image=$(echo "$rule" | cut -d'=' -f1)
-          docker pull "$src_image" --quiet || true
-        done
-
-        # 执行同步逻辑
-        for rule in $SYNC_RULES; do
+        export BUILDKIT_PROGRESS=plain
+        failed_rules=()
+        
+        while IFS= read -r rule; do
           [[ -z "$rule" ]] && continue
           echo "=== 处理规则: $rule ==="
-          if ! IFS="=" read -r src_image target_part <<< "${rule// /}"; then
-            echo "⚠️ 格式错误: $rule"
-            continue
-          fi
-
-          # 解析目标镜像（原有逻辑）
-          if [[ "$target_part" == *":"* ]]; then
-            target_tag="${target_part##*:}"
-            repo_part="${target_part%:*}"
-          else
-            target_tag="latest"
-            repo_part="$target_part"
-          fi
-
-          if [[ "$repo_part" == *"/"* ]]; then
-            target_user="${repo_part%%/*}"
-            target_image="${repo_part#*/}"
-            [[ ! "$target_user" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] && continue
-          else
-            target_user="$DOCKERHUB_USER"
-            target_image="$repo_part"
-          fi
-
-          final_target="${target_user}/${target_image}:${target_tag}"
-          [[ ! "$final_target" =~ ^([a-z0-9]+([._-][a-z0-9]+)*/)?[a-z0-9]+([._-][a-z0-9]+)*:[a-zA-Z0-9_.-]+$ ]] && continue
-
-          echo "▷ 源镜像: $src_image → 目标: $final_target"
-          echo "🔄 开始同步操作..."
           
-          # 验证源镜像可访问性
-          if ! docker buildx imagetools inspect "$src_image" >/dev/null 2>&1; then
-            echo "❌ 源镜像不可访问: $src_image"
-            echo "尝试使用 library/$src_image..."
-            if ! docker buildx imagetools inspect "library/$src_image" >/dev/null 2>&1; then
-              echo "❌ 镜像仍然不可访问: library/$src_image"
-              continue
-            else
-              src_image="library/$src_image"
-            fi
+          # 使用参数替换增强容错性
+          src_image="${rule%%=*}"
+          target_spec="${rule#*=}"
+          target_spec="${target_spec/#docker.io\//}"  # 自动去除冗余registry
+
+          # 智能补全逻辑
+          if [[ "$target_spec" != *":"* ]]; then
+            target_spec+=":$(awk -F':' '{print $2}' <<<"$src_image" | grep -v ^$ || echo latest)"
           fi
+          [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
+
+          # 增加同步超时控制
+          echo "🔄 同步 $src_image → $target_spec"
+          timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
           
-          # 执行多架构镜像同步
-          echo "🚀 正在同步多平台镜像..."
-          if docker buildx imagetools create -t "$final_target" "$src_image" >/dev/null 2>&1; then
+          # 收集同步结果
+          if (( $? != 0 )); then
+            failed_rules+=("$rule")
+            echo "❌ 同步失败: $rule"
+            docker buildx imagetools inspect "$src_image" || true
+          else
             echo "✅ 同步成功"
-            echo "镜像详细信息："
-            docker buildx imagetools inspect "$final_target"
-          else
-            echo "❌ 同步失败，错误详情："
-            # 显示完整错误输出
-            docker buildx imagetools create -t "$final_target" "$src_image"
+            docker buildx imagetools inspect "$target_spec" | grep -E 'Platform:|Size:'
           fi
+          
           echo "─────────────────────────────────────"
-        done
+        done <<< "$SYNC_RULES"
+
+        # 输出最终报告
+        echo "=== 同步结果报告 ==="
+        echo "成功: $(( $(wc -l <<<"$SYNC_RULES") - ${#failed_rules[@]} )) 条"
+        if (( ${#failed_rules[@]} > 0 )); then
+          echo "失败 (${#failed_rules[@]}):"
+          printf '  - %s\n' "${failed_rules[@]}"
+          exit 1
+        fi
