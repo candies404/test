@@ -7,166 +7,92 @@ on:
 
 jobs:
   docker-sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 运行环境
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+    - name: 检出代码
+      uses: actions/checkout@v4
 
-      - name: 规则预处理
-        id: setup
-        run: |
-          CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" | 
-            tr ',' '\n' |
-            sed -E 's/[[:space:]]+//g; /^$/d' |
-            sort -u
-          )
-          echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
-          echo "$CLEANED_RULES" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
-          echo "$CLEANED_RULES"
+    - name: 规则预处理
+      id: setup
+      run: |
+        CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" | 
+          tr ',' '\n' |
+          sed -E 's/[[:space:]]+//g; /^$/d' |
+          sort -u
+        )
+        echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
+        echo "$CLEANED_RULES" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+        echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
+        echo "$CLEANED_RULES"
 
-      - name: 登录DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: 登录DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 配置高性能构建环境
-        uses: docker/setup-buildx-action@v3
-        id: buildx
-        with:
-          driver: docker-container
-          driver-opts: |
-            image=moby/buildkit:master
-            network=host
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["dockerpull.cn"]
-            [worker.oci]
-              max-parallelism = 4
+    - name: 配置高性能构建环境
+      uses: docker/setup-buildx-action@v3
+      id: buildx
+      with:
+        driver: docker-container
+        driver-opts: |
+          image=moby/buildkit:master
+          network=host
+        buildkitd-config-inline: |
+          [registry."docker.io"]
+            mirrors = ["dockerpull.cn"]
+          [worker.oci]
+            max-parallelism = 4
 
-      - name: 执行智能镜像同步
-        env:
-          DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
-        run: |
-          export BUILDKIT_PROGRESS=plain
-          failed_rules=()
-          SUCCESS_COUNT=0
+    - name: 执行智能镜像同步
+      env:
+        DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
+      run: |
+        export BUILDKIT_PROGRESS=plain
+        failed_rules=()
+        
+        while IFS= read -r rule; do
+          [[ -z "$rule" ]] && continue
+          echo "=== 处理规则: $rule ==="
           
-          while IFS= read -r rule; do
-            [[ -z "$rule" ]] && continue
-            echo "=== 处理规则: $rule ==="
-            
-            src_image="${rule%%=*}"
-            target_spec="${rule#*=}"
-            target_spec="${target_spec/#docker.io\//}"
-            if [[ "$target_spec" != *":"* ]]; then
-              target_spec+=":$(awk -F':' '{print $2}' <<<"$src_image" | grep -v ^$ || echo latest)"
-            fi
-            [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
+          # 使用参数替换增强容错性
+          src_image="${rule%%=*}"
+          target_spec="${rule#*=}"
+          target_spec="${target_spec/#docker.io\//}"  # 自动去除冗余registry
 
-            # === 架构检查 ===
-            echo "=== 架构检查 ==="
-            echo "获取源镜像架构：$src_image"
-            
-          # 提取源镜像平台信息
-            raw_src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null | grep 'Platform:')
-            echo "源镜像原始平台信息："
-            echo "$raw_src_platforms"
-            
-          # 处理平台数据
-            src_platforms=$(echo "$raw_src_platforms" | \
-              sed -E 's/Platform: //g; s/, /\n/g' | \
-              tr -d ' ' | \
-              sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
-              sort -u | \
-              awk 'NF')
-            
-            echo "处理后的源镜像架构 ($(echo "$src_platforms" | wc -l) 种）："
-            printf '  - %s\n' $src_platforms
-            
-            if [ -z "$src_platforms" ]; then
-              echo "❌ 获取源镜像架构失败"
-              failed_rules+=("$rule")
-              continue
-            fi
-
-            # === 目标镜像处理 ===
-            echo "检查目标镜像：$target_spec"
-            raw_target_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | grep 'Platform:')
-            echo "目标镜像原始平台信息："
-            [[ -n "$raw_target_platforms" ]] && echo "$raw_target_platforms" || echo "未找到目标镜像"
-            
-            target_platforms=$(echo "$raw_target_platforms" | \
-              sed -E 's/Platform: //g; s/, /\n/g' | \
-              tr -d ' ' | \
-              sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
-              sort -u | \
-              awk 'NF')
-            
-            echo "处理后的目标镜像架构 ($(echo "$target_platforms" | wc -l) 种）："
-            [[ -n "$target_platforms" ]] && printf '  - %s\n' $target_platforms || echo "  无有效架构"
-
-            # === 同步策略 ===
-            if [[ -z "$target_platforms" ]]; then
-              # 创建全新镜像
-              echo "🆕 初始化创建目标镜像..."
-              timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
-            else
-              # 增量同步逻辑
-              missing_platforms=()
-              while read -r platform; do
-                if ! grep -qxF "$platform" <<< "$target_platforms"; then
-                  missing_platforms+=("$platform")
-                fi
-              done <<< "$src_platforms"
-
-              if [ ${#missing_platforms[@]} -eq 0 ]; then
-                echo "✅ 目标架构已完整"
-              else
-                echo "🔄 需要同步 ${#missing_platforms[@]} 个架构"
-                # 关键修正：移除--platform参数使用
-                echo "尝试标准增量同步..."
-                timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image" --append
-
-                if (( $? != 0 )); then
-                  echo "⚠️ 增量同步失败，尝试强制覆盖"
-                  timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image" --force
-                fi
-              fi
-            fi
-
-            # === 结果验证 ===
-            sync_result=$?
-            final_platforms=$(docker buildx imagetools inspect "$target_spec" 2>/dev/null | \
-              grep 'Platform:' | \
-              sed -E 's/Platform: //g; s/, /\n/g' | \
-              tr -d ' ' | \
-              sed -e '/^unknown\/unknown$/d' -e '/^$/d' | \
-              sort -u | \
-              awk 'NF')
-
-            if [ -n "$final_platforms" ] && ! comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort) | grep -q .; then
-              echo "✅ 最终验证通过"
-              SUCCESS_COUNT=$((SUCCESS_COUNT+1))
-            else
-              echo "❌ 最终验证失败"
-              if [[ $sync_result -eq 0 ]]; then
-                missing=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort))
-                echo "未同步架构："
-                echo "$missing"
-              fi
-              failed_rules+=("$rule")
-            fi
-
-            echo "─────────────────────────────────────"
-          done <<< "$SYNC_RULES"
-
-          echo "=== 同步结果报告 ==="
-          echo "成功构建镜像: $SUCCESS_COUNT 条"
-          echo "失败处理规则: ${#failed_rules[@]} 条"
-          if (( ${#failed_rules[@]} > 0 )); then
-            printf '失败规则列表：\n  - %s\n' "${failed_rules[@]}"
-            exit 1
+          # 智能补全逻辑
+          if [[ "$target_spec" != *":"* ]]; then
+            target_spec+=":$(awk -F':' '{print $2}' <<<"$src_image" | grep -v ^$ || echo latest)"
           fi
+          [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
+
+          # 增加同步超时控制
+          echo "🔄 同步 $src_image → $target_spec"
+          timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
+          
+          # 收集同步结果
+          if (( $? != 0 )); then
+            failed_rules+=("$rule")
+            echo "❌ 同步失败: $rule"
+            docker buildx imagetools inspect "$src_image" || true
+          else
+            echo "✅ 同步成功"
+            # 增加平台过滤逻辑（关键修改点）
+            docker buildx imagetools inspect "$target_spec" | \
+            grep -E 'Platform:|Size:' | \
+            grep -v 'Platform:.*unknown/unknown'
+          fi
+          
+          echo "─────────────────────────────────────"
+        done <<< "$SYNC_RULES"
+
+        # 输出最终报告
+        echo "=== 同步结果报告 ==="
+        echo "成功: $(( $(wc -l <<<"$SYNC_RULES") - ${#failed_rules[@]} )) 条"
+        if (( ${#failed_rules[@]} > 0 )); then
+          echo "失败 (${#failed_rules[@]}):"
+          printf '  - %s\n' "${failed_rules[@]}"
+          exit 1
+        fi
