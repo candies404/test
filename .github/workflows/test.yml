@@ -98,16 +98,28 @@ jobs:
             continue
           fi
 
+          # 获取支持的平台列表并过滤unknown
+          platforms=$(docker buildx imagetools inspect "$src_image" --raw | 
+            jq -r '.manifests[] | select(.platform.os != "unknown") | 
+            "\(.platform.os)/\(.platform.architecture)\(if .platform.variant then "/"+.platform.variant else "" end)"' | 
+            sort -u | tr '\n' ',' | sed 's/,$//')
+
+          if [[ -z "$platforms" ]]; then
+            echo "⚠️ 未找到有效平台，跳过"
+            continue
+          fi
+
+          echo "📌 检测到有效平台: ${platforms//,/ }"
+
           # 执行多架构同步
           echo "🚀 开始镜像同步..."
-          if docker buildx imagetools create -t "$final_target" "$src_image" >/dev/null 2>&1; then
+          if docker buildx build --platform "$platforms" --push -t "$final_target" "$src_image" >/dev/null 2>&1; then
             echo "✅ 同步成功"
             echo "镜像详情："
             docker buildx imagetools inspect "$final_target"
           else
             echo "❌ 同步失败"
-            # 输出详细错误信息
-            docker buildx imagetools create -t "$final_target" "$src_image"
+            docker buildx build --platform "$platforms" --push -t "$final_target" "$src_image"
           fi
 
           echo "---------------------------------------"    
