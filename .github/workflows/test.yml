@@ -104,20 +104,35 @@ jobs:
             if is_multiarch "$raw_src_platforms"; then
               src_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_src_platforms")")
             else
-              # 处理遗留镜像格式
               src_arch=$(grep 'Architecture:' <<< "$raw_src_platforms" | awk '{print $2}' | tr -d ',')
               src_os=$(grep 'OS:' <<< "$raw_src_platforms" | awk '{print $2}' | tr -d ',')
-              src_platforms="${src_os}/${src_arch}"
+              src_platforms=$(echo "${src_os}/${src_arch}" | grep -v 'unknown/unknown')
             fi
 
-            echo "🔎 源镜像架构 ($(wc -l <<< "$src_platforms") 种)" && sed 's/^/  ➜ /' <<< "$src_platforms"
+            echo "🔎 源镜像架构 ($(echo "$src_platforms" | grep -c '^' || echo 0) 种)" 
+            [[ -n "$src_platforms" ]] && echo "$src_platforms" | sed 's/^/  ➜ /'
             [[ -z "$src_platforms" ]] && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
             
-            #======= 处理目标镜像 =======#
+            #======= 处理目标镜像（关键修改部分）=======#
             echo "✳️ 最终目标镜像: $final_spec"
             raw_target_platforms=$(docker buildx imagetools inspect "$final_spec" 2>/dev/null || true)
-            target_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_target_platforms")")
-            echo "📦 目标镜像架构 ($(wc -l <<< "$target_platforms") 种)" && sed 's/^/  ➜ /' <<< "$target_platforms"
+
+            if is_multiarch "$raw_target_platforms"; then
+              target_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_target_platforms")")
+            else
+              target_arch=$(grep 'Architecture:' <<< "$raw_target_platforms" | awk '{print $2}' | tr -d ',')
+              target_os=$(grep 'OS:' <<< "$raw_target_platforms" | awk '{print $2}' | tr -d ',')
+              if [[ -n "$target_arch" && -n "$target_os" ]]; then
+                target_platforms="${target_os}/${target_arch}"
+              else
+                target_platforms=""
+              fi
+            fi
+
+            # 显式清理空行
+            target_platforms=$(echo "$target_platforms" | grep -v '^$')
+            echo "📦 目标镜像架构 ($(echo "$target_platforms" | grep -c '^' || echo 0) 种)" 
+            [[ -n "$target_platforms" ]] && echo "$target_platforms" | sed 's/^/  ➜ /'
 
             #======= 同步策略 =======#
             if [[ -z "$target_platforms" ]]; then
@@ -127,7 +142,7 @@ jobs:
             else
               missing_platforms=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$target_platforms"))
               if [[ -n "$missing_platforms" ]]; then
-                echo "🔄 差异架构 ($(wc -l <<< "$missing_platforms") 种)" && sed 's/^/  ➤ /' <<< "$missing_platforms"
+                echo "🔄 差异架构 ($(wc -l <<< "$missing_platforms" | tr -d ' ') 种)" && sed 's/^/  ➤ /' <<< "$missing_platforms"
                 timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append || {
                   echo "⚡ 增量失败，尝试强制覆盖"; 
                   timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force;
@@ -141,13 +156,18 @@ jobs:
 
             #======= 结果验证 =======#
             final_platforms=$(get_platforms "$(docker buildx imagetools inspect "$final_spec" 2>/dev/null | grep 'Platform:')")
+            [[ -z "$final_platforms" ]] && {  # 单架构镜像的处理
+              final_arch=$(docker buildx imagetools inspect "$final_spec" | grep 'Architecture:' | awk '{print $2}' | tr -d ',')
+              final_os=$(docker buildx imagetools inspect "$final_spec" | grep 'OS:' | awk '{print $2}' | tr -d ',')
+              final_platforms="$final_os/$final_arch"
+            }
             missing_check=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$final_platforms"))
             if [[ -n "$missing_check" ]]; then
               echo "❌ 验证失败，缺少架构：" && sed 's/^/  ▸ /' <<< "$missing_check"
               failed_rules+=("$rule")
             else
               echo "✅ 验证通过" 
-              docker buildx imagetools inspect "$final_spec" | grep -E 'Platform:|Size:' | sed 's/^/  ✨ /'
+              docker buildx imagetools inspect "$final_spec" | grep -E 'Platform:|OS: / Architecture:' | sed 's/^/  ✨ /'
             fi
 
             echo "─────────────────────────────────────"
