@@ -23,7 +23,7 @@ jobs:
           echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
           echo "$CLEANED_RULES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-          echo "=== 有效镜像 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
+          echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
           echo "$CLEANED_RULES"
 
       - name: 登录DockerHub
@@ -55,41 +55,28 @@ jobs:
           SYNC_EXECUTED=0
           SYNC_SKIPPED=0
 
-          # 增强版架构检测函数
+          # 增强架构解析函数
           analyze_platforms() {
             local image=$1
-            local output ret=0
-            output=$(docker buildx imagetools inspect "$image" 2>&1) || ret=$?
-
-            # 处理镜像不存在的情况
-            if [[ $ret -ne 0 ]]; then
-              if [[ "$output" =~ "manifest unknown" || "$output" =~ "not found" ]]; then
-                echo "NON_EXISTENT"
-                return 1
-              else
-                echo "ERROR: $output" >&2
-                return 2
-              fi
-            fi
-
-            # 优化架构提取逻辑
+            local output
+            output=$(docker buildx imagetools inspect "$image" 2>&1) || {
+              [[ "$output" =~ (no such manifest|not found) ]] && echo "NON_EXISTENT"
+              return 1
+            }
             echo "$output" | awk '
               /^Platform:/ {
-                split($0, parts, /: /)
-                gsub(/, /, "\n", parts[2])
-                gsub(/ /, "", parts[2])
+                split($0, parts, /: /);
+                gsub(/, /, "\n", parts[2]);
                 print parts[2]
               }' | sed '
-                s/,/\n/g;
-                /^unknown\/unknown$/d;
+                /^unknown\/unknown/d;
+                /^$/d;
                 s/^[[:space:]]*//;
-                s/[[:space:]]*$//;
-                /^$/d' | sort -u
+                s/[[:space:]]*$//' | sort -u
           }
 
-          # 精确计数函数
           count_platforms() {
-            echo "$1" | grep -v "NON_EXISTENT" | awk 'NF {count++} END {print count+0}'
+            echo "$1" | awk 'BEGIN{count=0} NF {count++} END{print count}'
           }
 
           while IFS= read -r rule; do
@@ -119,14 +106,14 @@ jobs:
               target_tag="$src_tag"
             fi
 
-            # 合成目标规格
+            # 合成目标spec
             final_spec="$target_base"
             [[ "$final_spec" != */* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
             final_spec+=":$target_tag"
 
             #======= 源镜像分析 =======#
-            echo "🔍 分析源镜像架构..."
-            src_platforms=$(analyze_platforms "$src_image" || true)
+            echo "🔍 解析源镜像架构..."
+            src_platforms=$(analyze_platforms "$src_image")
             if [[ "$src_platforms" == "NON_EXISTENT" ]]; then
               echo "❌ 源镜像不存在: $src_image"
               failed_rules+=("$rule")
@@ -138,13 +125,13 @@ jobs:
             (( src_count == 0 )) && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
 
             #======= 目标镜像分析 =======#
-            echo "✳️ 最终目标镜像: $final_spec"
+            echo "✳️ 分析目标镜像: $final_spec"
             target_platforms=$(analyze_platforms "$final_spec" || true)
             
             if [[ "$target_platforms" == "NON_EXISTENT" ]]; then
               echo "📦 目标镜像不存在"
               target_count=0
-              target_platforms=""  # 清空传参
+              target_platforms=""
             else
               target_count=$(count_platforms "$target_platforms")
               echo "📦 目标镜像架构 ($target_count 种)"
@@ -167,7 +154,7 @@ jobs:
                 echo "🔄 差异架构 ($missing_count 种)"
                 echo "$missing_platforms" | sed 's/^/  ➤ /'
                 if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append; then
-                  echo "⚡ 增量同步失败，尝试覆盖模式"
+                  echo "⚡ 增量失败，尝试强制覆盖"
                   if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force; then
                     echo "❌ 同步彻底失败"
                     failed_rules+=("$rule")
@@ -182,17 +169,17 @@ jobs:
             fi
 
             #======= 验证阶段 =======#
-            echo "✅ 最终验证..."
+            echo "✅ 执行最终验证..."
             final_platforms=$(analyze_platforms "$final_spec" || true)
             final_count=$(count_platforms "$final_platforms")
             missing_final=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort))
             
             if (( final_count < src_count )) || [[ -n "$missing_final" ]]; then
-              echo "❌ 验证失败（缺少$((src_count - final_count))种架构）"
+              echo "❌ 验证失败（缺少 $((src_count - final_count)) 种架构）"
               echo "$missing_final" | sed 's/^/  ▸ /'
               failed_rules+=("$rule")
             else
-              echo "✅ 验证通过" 
+              echo "✅ 验证通过"
               docker buildx imagetools inspect "$final_spec" | grep -E 'Platform:|Size:' | sed 's/^/  ✨ /'
             fi
             echo "─────────────────────────────────────"
@@ -200,15 +187,15 @@ jobs:
 
           #======= 报告生成 =======#
           total_rules=$(count_platforms "$SYNC_RULES")
-          success_rules=$((SYNC_EXECUTED + SYNC_SKIPPED))
+          success_count=$(($SYNC_EXECUTED + $SYNC_SKIPPED))
           echo "📊=== 同步报告 ==="
           echo "🔢 处理总数 | $total_rules"
           echo "🟢 成功同步 | $SYNC_EXECUTED"
           echo "🟡 跳过同步 | $SYNC_SKIPPED"
-          echo "🔴 同步失败 | $((total_rules - success_rules))"
+          echo "🔴 同步失败 | $(($total_rules - $success_count))"
           
           if (( ${#failed_rules[@]} > 0 )); then
-            echo "🔥 失败详情："
+            echo "🔥 失败规则："
             printf "  ‼️ %s\n" "${failed_rules[@]}"
             exit 1
           fi
