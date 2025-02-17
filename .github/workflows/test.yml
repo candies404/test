@@ -7,7 +7,7 @@ on:
 
 jobs:
   docker-sync:
-    runs-on: ubuntu-latest  # 运行环境
+    runs-on: ubuntu-latest
     steps:
     - name: 检出代码
       uses: actions/checkout@v4
@@ -38,8 +38,51 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+    # 新增缓存优化部分 —— START
+    - name: 缓存Buildx镜像
+      uses: actions/cache@v4
+      id: buildx-cache
+      with:
+        path: |
+          buildx-cache.tar
+          buildkit-cache.tar
+        key: |
+          buildx-${{ github.workflow }}-${{ hashFiles(format('.github/workflows/{0}', github.workflow)) }}
+          buildx-${{ github.workflow }}
+      env:
+        cache-version: v2  # 缓存版本控制
+
+    - name: 处理Buildx依赖
+      run: |
+        # 检测并加载缓存
+        if [[ -f buildx-cache.tar && -f buildkit-cache.tar ]]; then
+          echo "🔄 从缓存加载镜像..."
+          docker load -i buildx-cache.tar
+          docker load -i buildkit-cache.tar
+          echo "已加载: $(docker images | grep -E 'docker/buildx|moby/buildkit')"
+        else
+          echo "⚡️ 拉取最新Buildx镜像..."
+          docker pull docker.io/docker/buildx:latest
+          docker pull docker.io/moby/buildkit:latest
+
+          echo "📦 保存镜像供后续使用..."
+          docker save docker/buildx:latest -o buildx-cache.tar
+          docker save moby/buildkit:latest -o buildkit-cache.tar
+
+          # 校验镜像完整性
+          if ! docker inspect docker/buildx:latest &> /dev/null; then
+            echo "❌ 镜像校验失败" >&2
+            exit 1
+          fi
+        fi
+    # 缓存优化部分 —— END
+
     - name: 配置构建环境
       uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: |
+          image=moby/buildkit:latest
+          network=host
 
     - name: 执行镜像处理
       env:
@@ -109,3 +152,11 @@ jobs:
           fi
           echo "─────────────────────────────────────"    
         done
+    - name: 显示缓存状态
+      if: always()
+      run: |
+        echo "::group::缓存详情"
+        docker images
+        ls -lh *.tar
+        echo "::endgroup::"    
+        echo "缓存命中状态: ${{ steps.buildx-cache.outputs.cache-hit }}"
