@@ -37,6 +37,9 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Process images
       env:
         DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
@@ -46,13 +49,13 @@ jobs:
           [[ -z "$rule" ]] && continue
           echo "=== 处理规则: $rule ==="
 
-          # 安全分割规则（忽略等号前的空格）
+          # 分割规则（支持SHA256格式）
           if ! IFS="=" read -r src_image target_part <<< "${rule// /}"; then
             echo "⚠️ 规则格式错误，跳过"
             continue
           fi
 
-          # 解析标签
+          # 解析目标部分标签
           if [[ "$target_part" == *":"* ]]; then
             target_tag="${target_part##*:}"
             repo_part="${target_part%:*}"
@@ -79,49 +82,32 @@ jobs:
           echo "使用的Docker用户: $DOCKERHUB_USER"
           echo "生成的目标镜像: $final_target"
 
-          # 最终镜像验证（调整正则）
+          # 最终镜像验证（允许包含SHA）
           if ! [[ "$final_target" =~ ^([a-z0-9]+([._-][a-z0-9]+)*/)?[a-z0-9]+([._-][a-z0-9]+)*:[a-zA-Z0-9_.-]+$ ]]; then
             echo "❌ 非法的镜像格式: $final_target"
             continue
           fi
 
+          echo "使用的Docker用户: $DOCKERHUB_USER"
+          echo "生成的目标镜像: $final_target"
           echo "🔄 同步中: $src_image → $final_target"
 
-          # 拉取源镜像
-          if ! docker pull -q "$src_image"; then
-            echo "❌ 无法拉取源镜像"
+          # 检查源镜像是否存在
+          if ! docker buildx imagetools inspect "$src_image" >/dev/null 2>&1; then
+            echo "❌ 无法访问源镜像"
             continue
           fi
 
-          # 拉取目标镜像以检查是否存在
-          if docker pull -q "$final_target" 2>/dev/null; then
-            target_exists=true
+          # 执行多架构同步
+          echo "🚀 开始镜像同步..."
+          if docker buildx imagetools create -t "$final_target" "$src_image" >/dev/null 2>&1; then
+            echo "✅ 同步成功"
+            echo "镜像详情："
+            docker buildx imagetools inspect "$final_target"
           else
-            target_exists=false
-          fi
-
-          # 获取镜像ID进行比较
-          src_id=$(docker inspect -f '{{.Id}}' "$src_image")
-          if $target_exists; then
-            target_id=$(docker inspect -f '{{.Id}}' "$final_target")
-          else
-            target_id=""
-          fi
-
-          echo "源镜像ID: $src_id"   
-          echo "目标镜像ID: $target_id"  
-
-          # 判断是否需要同步
-          if [[ "$src_id" != "$target_id" ]]; then
-            echo "🚀 检测到变更，开始同步..."
-            docker tag "$src_image" "$final_target"
-            if docker push -q "$final_target" 2>/dev/null; then
-              echo "✅ 同步成功"
-            else
-              echo "❌ 推送失败"
-            fi
-          else
-            echo "✅ 镜像已是最新，无需操作"
+            echo "❌ 同步失败"
+            # 输出详细错误信息
+            docker buildx imagetools create -t "$final_target" "$src_image"
           fi
 
           echo "---------------------------------------"    
