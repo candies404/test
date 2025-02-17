@@ -93,7 +93,13 @@ jobs:
           # 验证源镜像可访问性
           if ! docker buildx imagetools inspect "$src_image" >/dev/null 2>&1; then
             echo "❌ 源镜像不可访问: $src_image"
-            continue
+            echo "尝试使用 library/$src_image..."
+            if ! docker buildx imagetools inspect "library/$src_image" >/dev/null 2>&1; then
+              echo "❌ 镜像仍然不可访问: library/$src_image"
+              continue
+            else
+              src_image="library/$src_image"
+            fi
           fi
           
           # 执行多架构镜像同步
