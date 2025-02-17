@@ -1,118 +1,111 @@
-name: Docker Image Sync
+name: 镜像同步工作流
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * *'
+  workflow_dispatch:  # 手动触发
+  schedule:  # 定时任务
+    - cron: '0 2 * * *'  # 每日UTC 2点执行
 
 jobs:
   docker-sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 运行环境
     steps:
-    - name: Checkout
+    - name: 检出代码
       uses: actions/checkout@v4
 
-    - name: Setup sync rules
+    - name: 规则预处理
       id: setup
       run: |
-        # 清洗规则（增强空格处理）
+        # 清理输入规则（优化空格处理）
         CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" |
-          tr '\n' ',' | 
-          sed -E 's/[[:space:]]+//g; s/,+/ /g; s/^ | $//g' |
-          tr ' ' '\n' |
-          grep -v '^$'
+          tr '\n' ',' |  # 换行转逗号
+          sed -E 's/[[:space:]]+//g; s/,+/ /g; s/^ | $//g' |  # 合并冗余空格和逗号
+          tr ' ' '\n' |  # 空格转回车
+          grep -v '^$'  # 过滤空行
         )
         
+        # 将处理后的规则存入环境变量
         echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
         echo "$CLEANED_RULES" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
-
-        # 调试输出清洗后的规则
-        echo "=== 处理后规则 ==="
+        
+        # 输出调试信息
+        echo "=== 有效同步规则 ==="
         echo "$CLEANED_RULES"
 
-    - name: Login Docker Hub
+    - name: 登录DockerHub
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Set up Docker Buildx
+    - name: 配置构建环境
       uses: docker/setup-buildx-action@v3
 
-    - name: Process images
+    - name: 执行镜像处理
       env:
         DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
       run: |
-        IFS=$'\n'
+        IFS=$'\n'  # 设置字段分割符
         for rule in $SYNC_RULES; do
           [[ -z "$rule" ]] && continue
-          echo "=== 处理规则: $rule ==="
-
-          # 分割规则（支持SHA256格式）
+          echo "=== 正在处理规则: $rule ==="
+          
+          # 分解原始规则（兼容SHA256格式）
           if ! IFS="=" read -r src_image target_part <<< "${rule// /}"; then
-            echo "⚠️ 规则格式错误，跳过"
+            echo "⚠️ 格式错误：$rule，已跳过"
             continue
           fi
-
-          # 添加默认镜像源
-          if [[ ! "$src_image" == *"/"* ]] && [[ ! "$src_image" == *":"* ]]; then
-            src_image="docker.io/library/$src_image:latest"
-          fi
-
-          # 解析目标部分
+          
+          # 解析镜像标签和目标仓库
           if [[ "$target_part" == *":"* ]]; then
-            target_tag="${target_part##*:}"
-            repo_part="${target_part%:*}"
+            target_tag="${target_part##*:}"  # 截取标签部分
+            repo_part="${target_part%:*}"    # 保留仓库部分
           else
-            target_tag="latest"
+            target_tag="latest"  # 默认最新标签
             repo_part="$target_part"
           fi
-
+          
           # 处理用户命名空间
           if [[ "$repo_part" == *"/"* ]]; then
-            target_user="${repo_part%%/*}"
-            target_image="${repo_part#*/}"
-            # 验证用户名格式
+            target_user="${repo_part%%/*}"   # 提取目标用户
+            target_image="${repo_part#*/}"   # 提取镜像名称
+            # 校验用户名格式
             if [[ ! "$target_user" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-              echo "❌ 非法的用户名格式: $target_user"
+              echo "❌ 非法用户名: $target_user"
               continue
             fi
           else
-            target_user="$DOCKERHUB_USER"
+            target_user="$DOCKERHUB_USER"  # 使用默认用户
             target_image="$repo_part"
           fi
-
+          
           final_target="${target_user}/${target_image}:${target_tag}"
-          echo "使用的Docker用户: $DOCKERHUB_USER"
-          echo "生成的目标镜像: $final_target"
-
-
-          # 检查源镜像是否存在
-          if ! docker buildx imagetools inspect "$src_image" >/dev/null 2>&1; then
-            echo "❌ 无法访问源镜像 $src_image"
+          # 镜像地址合法性验证（支持包含SHA）
+          if ! [[ "$final_target" =~ ^([a-z0-9]+([._-][a-z0-9]+)*/)?[a-z0-9]+([._-][a-z0-9]+)*:[a-zA-Z0-9_.-]+$ ]]; then
+            echo "❌ 非法镜像地址: $final_target"
             continue
           fi
-
-          # 提取有效平台列表并过滤unknown
-          platforms=$(docker buildx imagetools inspect "$src_image" --format "{{ range .Manifests }}{{ if ne .Platform.os \"unknown\" }}{{ .Platform.os }}/{{ .Platform.architecture }}{{ if .Platform.variant }}/{{ .Platform.variant }}{{ fi }} {{ end }}{{ end }}")
-          echo "📌 有效平台: $platforms"
-
-          # Create manifest using explicit platforms
-          echo "🚀 开始镜像同步..."
-          echo "🔄 同步中: $src_image → $final_target"
-          if docker buildx imagetools create \
-            --tag "$final_target" \
-            $(echo "$src_image" | sed 's/\(.*\)/[ \1 ]/' | sed "s/ / --append /g") \
-            > sync.log 2>&1; then
-            
+          
+          echo "▷ 源镜像: $src_image"
+          echo "◷ 目标镜像: $final_target"
+          echo "🔄 开始同步操作..."
+          
+          # 验证源镜像可访问性
+          if ! docker buildx imagetools inspect "$src_image" >/dev/null 2>&1; then
+            echo "❌ 源镜像不可访问: $src_image"
+            continue
+          fi
+          
+          # 执行多架构镜像同步
+          echo "🚀 正在同步多平台镜像..."
+          if docker buildx imagetools create -t "$final_target" "$src_image" >/dev/null 2>&1; then
             echo "✅ 同步成功"
-            echo "镜像详情："
+            echo "镜像详细信息："
             docker buildx imagetools inspect "$final_target"
           else
-            echo "❌ 同步失败，错误日志："
-            cat sync.log
+            echo "❌ 同步失败，错误详情："
+            # 显示完整错误输出
+            docker buildx imagetools create -t "$final_target" "$src_image"
           fi
-
-          echo "---------------------------------------"    
+          echo "─────────────────────────────────────"    
         done
