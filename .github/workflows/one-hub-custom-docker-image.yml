@@ -1,184 +1,31 @@
-name: uptime-kuma 构建并推送镜像
+name: 检测镜像架构类型
 
 on:
   workflow_dispatch:
-  
+
 jobs:
-  Check-Update:
-    name: 检查更新
-    runs-on: ubuntu-latest
-    outputs:
-      repo_updated: ${{ steps.check_docker_hub.outputs.repo_updated }}
-      current_sha: ${{ steps.check_docker_hub.outputs.current_sha }}
-      last_commit_msg: ${{ steps.check_docker_hub.outputs.last_commit_msg }}
-      last_commit_author: ${{ steps.check_docker_hub.outputs.last_commit_author }}
-      last_commit_date: ${{ steps.check_docker_hub.outputs.last_commit_date }}
+  check-architectures:
+    runs-on: ubuntu-latest  # 使用 Ubuntu 最新版本作为运行环境
 
     steps:
-      - name: 设置仓库
-        uses: actions/checkout@v4
-        with:
-          repository: louislam/uptime-kuma
-          path: uptime-kuma
-          fetch-depth: 0
+    - name: 安装 skopeo
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y skopeo  # 安装 skopeo 工具
 
-      - name: 检查 Docker Hub 最新镜像
-        id: check_docker_hub
-        run: |
-          cd uptime-kuma
-          CURRENT_SHA=$(git rev-parse HEAD)
-          # 明确指定短SHA为7位
-          SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          COMMIT_DATE=$(git log -1 --format=%cs)
-          EXPECTED_TAG="${COMMIT_DATE}-${SHORT_SHA}"
-          
-          echo "正在检查标签: $EXPECTED_TAG"
-          TAG_EXISTS=$(curl -sf "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma/tags/$EXPECTED_TAG/" | jq -r '.name')
-          
-          if [ -z "$TAG_EXISTS" ]; then
-            echo "抱歉，没有找到标签 $EXPECTED_TAG"
+    - name: 检测镜像架构
+      run: |
+        # 定义需要检测的镜像列表
+        IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma")
+
+        for IMAGE in "${IMAGES[@]}"; do
+          echo "正在检测镜像: $IMAGE"
+          OUTPUT=$(skopeo inspect --raw docker://$IMAGE)  # 获取镜像元数据
+
+          if echo "$OUTPUT" | grep -q '"manifests":'; then
+            echo "$IMAGE 是多架构镜像"
           else
-            echo "Docker Hub返回的标签是: $TAG_EXISTS"
+            echo "$IMAGE 是单架构镜像"
           fi
-
-
-          if [[ "$TAG_EXISTS" == "$EXPECTED_TAG" ]]; then
-            echo "repo_updated=false" >> $GITHUB_OUTPUT
-            echo "current_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
-            echo "已存在匹配标签，跳过构建"
-          else
-            echo "repo_updated=true" >> $GITHUB_OUTPUT
-            echo "current_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
-            LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
-            LAST_COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
-            LAST_COMMIT_DATE=$(TZ='Asia/Shanghai' date -d "@$(git log -1 --format=%ct)" '+%Y-%m-%d %H:%M:%S')
-            echo "last_commit_msg=$LAST_COMMIT_MSG" >> $GITHUB_OUTPUT
-            echo "last_commit_author=$LAST_COMMIT_AUTHOR" >> $GITHUB_OUTPUT
-            echo "last_commit_date=$LAST_COMMIT_DATE" >> $GITHUB_OUTPUT
-            echo "未找到匹配标签，触发构建"
-          fi
-
-      # - name: 获取检查时间
-      #   id: check_time
-      #   run: echo "check_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
-
-      # - name: 发送无需更新通知
-      #   if: ${{ steps.check_docker_hub.outputs.repo_updated == 'false' }}
-      #   uses: candies404/Multi-Channel-Notifier@latest
-      #   with:
-      #     wpush_key: ${{ secrets.WPUSH_KEY }}
-      #     hitokoto: 'false'
-      #     title: "uptime-kuma 镜像检查报告"
-      #     content: |
-      #       ### 🟢 镜像状态未更新
-      #       **检查时间:** ${{ steps.check_time.outputs.check_time }}
-      #       **当前状态:** Docker Hub 已存在最新版本镜像
-      #       **仓库跟踪:** [louislam/uptime-kuma](https://github.com/louislam/uptime-kuma)
-
-  Build-and-Push:
-    name: 构建并推送镜像
-    runs-on: ubuntu-latest
-    needs: Check-Update
-    if: ${{ needs.Check-Update.outputs.repo_updated == 'true' }}
-    
-    steps:
-      - name: 设置指定版本仓库
-        uses: actions/checkout@v4
-        with:
-          repository: louislam/uptime-kuma
-          path: uptime-kuma
-          ref: ${{ needs.Check-Update.outputs.current_sha }}
-
-      - name: 设置 Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 登录 Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 创建 Dockerfile
-        run: |
-          cat <<EOF > uptime-kuma/Dockerfile
-          FROM node:20-alpine AS builder
-          WORKDIR /app
-          COPY package*.json ./
-          # 使用精确版本安装并抑制警告
-          RUN npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline
-          COPY . .
-          RUN npm run build
-          # 严格生产环境依赖修剪
-          RUN npm prune --production --no-audit --no-fund
-          FROM node:20-alpine
-          WORKDIR /app
-          COPY --from=builder /app/dist ./dist
-          COPY --from=builder /app/server ./server
-          COPY --from=builder /app/node_modules ./node_modules
-          COPY --from=builder /app/package*.json ./
-          COPY --from=builder /app/src ./src
-          COPY --from=builder /app/db ./db
-          EXPOSE 3001
-          CMD ["node", "server/server.js"]
-          EOF
-
-      - name: 构建并上传镜像
-        id: build_push
-        env:
-          IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/uptime-kuma
-        run: |
-          cd uptime-kuma
-          # 保持与检查阶段相同的7位短SHA
-          SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          COMMIT_DATE=$(git log -1 --format=%cs)
-          TAG="${COMMIT_DATE}-${SHORT_SHA}"
-
-          echo "镜像标签为: $TAG"
-          docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
-          
-          echo "推送镜像到Docker Hub..."
-          docker push $IMAGE_NAME:$TAG
-          docker push $IMAGE_NAME:latest
-          
-          echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
-          echo "镜像推送完成"
-
-      - name: 获取构建时间
-        id: build_time
-        if: always()
-        run: echo "BUILD_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
-
-      - name: 发送构建通知
-        uses: candies404/Multi-Channel-Notifier@latest
-        if: always()
-        with:
-          wpush_key: ${{ secrets.WPUSH_KEY }}
-          hitokoto: 'false'
-          title: ${{ steps.build_push.outcome == 'success' && '✅ uptime-kuma 构建成功' || '❌ uptime-kuma 构建失败' }}
-          content: |
-            ${{ format('{0}', 
-              steps.build_push.outcome == 'success' 
-              && format('
-              ### 🚀 新版本镜像已发布
-              **发布时间:** {0}
-              **镜像标签:** {1}
-              **提交信息:** {2}
-              **提交作者:** {3}
-              **提交时间:** {4}
-              **镜像地址:** [点击查看](https://hub.docker.com/r/{5}/uptime-kuma/tags)',
-              env.BUILD_TIME,
-              env.IMAGE_TAG, 
-              needs.Check-Update.outputs.last_commit_msg,
-              needs.Check-Update.outputs.last_commit_author,
-              needs.Check-Update.outputs.last_commit_date,
-              secrets.DOCKERHUB_USERNAME)
-              
-              || format('
-              ### 🔥 构建失败需处理
-              **失败时间:** {0}
-              **构建日志:** [查看详情]({1}/{2}/actions/runs/{3})',
-              env.BUILD_TIME,
-              github.server_url,
-              github.repository,
-              github.run_id)
-            ) }}
+          echo "----------------------------------------"
+        done
