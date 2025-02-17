@@ -57,11 +57,9 @@ jobs:
         driver-opts: |
           image=moby/buildkit:latest
           network=host
-        buildkitd-config: |
+        buildkitd-config-inline: |
           [registry."docker.io"]
             mirrors = ["dockerpull.cn"]
-        cache-from: type=local,src=/tmp/.buildx-cache
-        cache-to: type=local,dest=/tmp/.buildx-cache
 
     - name: 执行镜像处理
       env:
