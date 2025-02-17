@@ -55,7 +55,12 @@ jobs:
             continue
           fi
 
-          # 解析目标部分标签
+          # 添加默认镜像源
+          if [[ ! "$src_image" == *"/"* ]] && [[ ! "$src_image" == *":"* ]]; then
+            src_image="docker.io/library/$src_image:latest"
+          fi
+
+          # 解析目标部分
           if [[ "$target_part" == *":"* ]]; then
             target_tag="${target_part##*:}"
             repo_part="${target_part%:*}"
@@ -64,7 +69,7 @@ jobs:
             repo_part="$target_part"
           fi
 
-          # 处理命名空间
+          # 处理用户命名空间
           if [[ "$repo_part" == *"/"* ]]; then
             target_user="${repo_part%%/*}"
             target_image="${repo_part#*/}"
@@ -82,44 +87,31 @@ jobs:
           echo "使用的Docker用户: $DOCKERHUB_USER"
           echo "生成的目标镜像: $final_target"
 
-          # 最终镜像验证（允许包含SHA）
-          if ! [[ "$final_target" =~ ^([a-z0-9]+([._-][a-z0-9]+)*/)?[a-z0-9]+([._-][a-z0-9]+)*:[a-zA-Z0-9_.-]+$ ]]; then
-            echo "❌ 非法的镜像格式: $final_target"
-            continue
-          fi
-
-          echo "使用的Docker用户: $DOCKERHUB_USER"
-          echo "生成的目标镜像: $final_target"
-          echo "🔄 同步中: $src_image → $final_target"
 
           # 检查源镜像是否存在
           if ! docker buildx imagetools inspect "$src_image" >/dev/null 2>&1; then
-            echo "❌ 无法访问源镜像"
+            echo "❌ 无法访问源镜像 $src_image"
             continue
           fi
 
-          # 获取支持的平台列表并过滤unknown
-          platforms=$(docker buildx imagetools inspect "$src_image" --raw | 
-            jq -r '.manifests[] | select(.platform.os != "unknown") | 
-            "\(.platform.os)/\(.platform.architecture)\(if .platform.variant then "/"+.platform.variant else "" end)"' | 
-            sort -u | tr '\n' ',' | sed 's/,$//')
+          # 提取有效平台列表并过滤unknown
+          platforms=$(docker buildx imagetools inspect "$src_image" --format "{{ range .Manifests }}{{ if ne .Platform.os \"unknown\" }}{{ .Platform.os }}/{{ .Platform.architecture }}{{ if .Platform.variant }}/{{ .Platform.variant }}{{ fi }} {{ end }}{{ end }}")
+          echo "📌 有效平台: $platforms"
 
-          if [[ -z "$platforms" ]]; then
-            echo "⚠️ 未找到有效平台，跳过"
-            continue
-          fi
-
-          echo "📌 检测到有效平台: ${platforms//,/ }"
-
-          # 执行多架构同步
+          # Create manifest using explicit platforms
           echo "🚀 开始镜像同步..."
-          if docker buildx build --platform "$platforms" --push -t "$final_target" "$src_image" >/dev/null 2>&1; then
+          echo "🔄 同步中: $src_image → $final_target"
+          if docker buildx imagetools create \
+            --tag "$final_target" \
+            $(echo "$src_image" | sed 's/\(.*\)/[ \1 ]/' | sed "s/ / --append /g") \
+            > sync.log 2>&1; then
+            
             echo "✅ 同步成功"
             echo "镜像详情："
             docker buildx imagetools inspect "$final_target"
           else
-            echo "❌ 同步失败"
-            docker buildx build --platform "$platforms" --push -t "$final_target" "$src_image"
+            echo "❌ 同步失败，错误日志："
+            cat sync.log
           fi
 
           echo "---------------------------------------"    
