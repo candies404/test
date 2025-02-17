@@ -23,7 +23,7 @@ jobs:
           echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
           echo "$CLEANED_RULES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-          echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
+          echo "=== 有效镜像 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
           echo "$CLEANED_RULES"
 
       - name: 登录DockerHub
@@ -55,27 +55,39 @@ jobs:
           SYNC_EXECUTED=0
           SYNC_SKIPPED=0
 
-          # 增强架构检测函数
-          safe_inspect_platforms() {
+          # 增强版架构检测函数
+          analyze_platforms() {
             local image=$1
-            # 同时捕获标准输出和标准错误
-            local output=$(docker buildx imagetools inspect "$image" 2>&1)
-            
-            # 检测镜像不存在的情况
-            if [[ "$output" =~ "does not exist" || "$output" =~ "not found" ]]; then
-              echo "NON_EXISTENT"
-              return 1
+            local output ret=0
+            output=$(docker buildx imagetools inspect "$image" 2>&1) || ret=$?
+
+            # 处理镜像不存在的情况
+            if [[ $ret -ne 0 ]]; then
+              if [[ "$output" =~ "manifest unknown" || "$output" =~ "not found" ]]; then
+                echo "NON_EXISTENT"
+                return 1
+              else
+                echo "ERROR: $output" >&2
+                return 2
+              fi
             fi
-            
-            # 返回有效的架构列表
-            echo "$output" | grep 'Platform:' | sed -E \
-              -e 's/Platform: +//' \
-              -e 's/, /\n/g' \
-              -e '/^unknown/d' \
-              -e '/^$/d'
+
+            # 优化架构提取逻辑
+            echo "$output" | awk '
+              /^Platform:/ {
+                split($0, parts, /: /)
+                gsub(/, /, "\n", parts[2])
+                gsub(/ /, "", parts[2])
+                print parts[2]
+              }' | sed '
+                s/,/\n/g;
+                /^unknown\/unknown$/d;
+                s/^[[:space:]]*//;
+                s/[[:space:]]*$//;
+                /^$/d' | sort -u
           }
 
-          # 修正统计函数
+          # 精确计数函数
           count_platforms() {
             echo "$1" | grep -v "NON_EXISTENT" | awk 'NF {count++} END {print count+0}'
           }
@@ -98,7 +110,7 @@ jobs:
               src_name="$src_image"
             fi
 
-            # 确保目标spec包含正确标签
+            # 处理目标标签
             if [[ "$target_spec" == *":"* ]]; then
               target_tag="${target_spec##*:}"
               target_base="${target_spec%:*}"
@@ -107,57 +119,55 @@ jobs:
               target_tag="$src_tag"
             fi
 
-            # 自动补全用户前缀并合成最终spec
+            # 合成目标规格
             final_spec="$target_base"
-            [[ ! "$final_spec" == *"/"* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
+            [[ "$final_spec" != */* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
             final_spec+=":$target_tag"
 
-            #======= 架构分析 =======#
-            # 获取源架构（增加错误处理）
-            raw_src_output=$(safe_inspect_platforms "$src_image" || true)
-            if [[ "$raw_src_output" == "NON_EXISTENT" ]]; then
+            #======= 源镜像分析 =======#
+            echo "🔍 分析源镜像架构..."
+            src_platforms=$(analyze_platforms "$src_image" || true)
+            if [[ "$src_platforms" == "NON_EXISTENT" ]]; then
               echo "❌ 源镜像不存在: $src_image"
               failed_rules+=("$rule")
               continue
             fi
-            src_platforms=$(echo "$raw_src_output" | sed -e '/^$/d' | sort -u)
-            echo "🔎 源镜像架构 ($(count_platforms "$src_platforms") 种)" 
+            src_count=$(count_platforms "$src_platforms")
+            echo "🔎 源镜像架构 ($src_count 种)"
             echo "$src_platforms" | sed 's/^/  ➜ /'
+            (( src_count == 0 )) && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
 
-            #======= 处理目标镜像 =======#
+            #======= 目标镜像分析 =======#
             echo "✳️ 最终目标镜像: $final_spec"
-            raw_target_output=$(safe_inspect_platforms "$final_spec" || true)
+            target_platforms=$(analyze_platforms "$final_spec" || true)
             
-            if [[ "$raw_target_output" == "NON_EXISTENT" ]]; then
+            if [[ "$target_platforms" == "NON_EXISTENT" ]]; then
               echo "📦 目标镜像不存在"
-              target_platforms=""
-              target_platform_count=0
+              target_count=0
+              target_platforms=""  # 清空传参
             else
-              target_platforms=$(echo "$raw_target_output" | sed -e '/^$/d' | sort -u)
-              target_platform_count=$(count_platforms "$target_platforms")
-              echo "📦 目标镜像架构 ($target_platform_count 种)"
+              target_count=$(count_platforms "$target_platforms")
+              echo "📦 目标镜像架构 ($target_count 种)"
               echo "$target_platforms" | sed 's/^/  ➜ /'
             fi
 
             #======= 同步策略 =======#
-            if (( target_platform_count == 0 )); then
+            if (( target_count == 0 )); then
               echo "🆕 初始化镜像..."
               if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image"; then
-                echo "❌ 镜像初始化失败"
+                echo "❌ 初始化失败"
                 failed_rules+=("$rule")
                 continue
               fi
               SYNC_EXECUTED=$((SYNC_EXECUTED+1))
             else
-              missing_platforms=$(comm -23 <(echo "$src_platforms") <(echo "$target_platforms"))
+              missing_platforms=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$target_platforms" | sort))
               missing_count=$(count_platforms "$missing_platforms")
-              
               if (( missing_count > 0 )); then
                 echo "🔄 差异架构 ($missing_count 种)"
                 echo "$missing_platforms" | sed 's/^/  ➤ /'
-                
                 if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append; then
-                  echo "⚡ 增量失败，尝试强制覆盖"
+                  echo "⚡ 增量同步失败，尝试覆盖模式"
                   if ! timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force; then
                     echo "❌ 同步彻底失败"
                     failed_rules+=("$rule")
@@ -166,19 +176,20 @@ jobs:
                 fi
                 SYNC_EXECUTED=$((SYNC_EXECUTED+1))
               else
-                echo "⏭️ 已保持最新，跳过同步"
+                echo "⏭️ 已保持最新"
                 SYNC_SKIPPED=$((SYNC_SKIPPED+1))
               fi
             fi
 
-            #======= 结果验证 =======#
-            final_raw_output=$(safe_inspect_platforms "$final_spec" || true)
-            final_platforms=$(echo "$final_raw_output" | sed -e '/^$/d' | sort -u)
-            missing_check=$(comm -23 <(echo "$src_platforms") <(echo "$final_platforms"))
+            #======= 验证阶段 =======#
+            echo "✅ 最终验证..."
+            final_platforms=$(analyze_platforms "$final_spec" || true)
+            final_count=$(count_platforms "$final_platforms")
+            missing_final=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort))
             
-            if [[ -n "$missing_check" ]]; then
-              echo "❌ 验证失败，缺少架构："
-              echo "$missing_check" | sed 's/^/  ▸ /'
+            if (( final_count < src_count )) || [[ -n "$missing_final" ]]; then
+              echo "❌ 验证失败（缺少$((src_count - final_count))种架构）"
+              echo "$missing_final" | sed 's/^/  ▸ /'
               failed_rules+=("$rule")
             else
               echo "✅ 验证通过" 
@@ -187,15 +198,16 @@ jobs:
             echo "─────────────────────────────────────"
           done <<< "$SYNC_RULES"
 
-          #======= 可视化报告 =======#
+          #======= 报告生成 =======#
           total_rules=$(count_platforms "$SYNC_RULES")
+          success_rules=$((SYNC_EXECUTED + SYNC_SKIPPED))
           echo "📊=== 同步报告 ==="
           echo "🔢 处理总数 | $total_rules"
           echo "🟢 成功同步 | $SYNC_EXECUTED"
           echo "🟡 跳过同步 | $SYNC_SKIPPED"
-          echo "🔴 同步失败 | ${#failed_rules[@]}"
+          echo "🔴 同步失败 | $((total_rules - success_rules))"
           
-          if ((${#failed_rules[@]} > 0)); then
+          if (( ${#failed_rules[@]} > 0 )); then
             echo "🔥 失败详情："
             printf "  ‼️ %s\n" "${failed_rules[@]}"
             exit 1
