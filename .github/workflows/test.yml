@@ -57,8 +57,14 @@ jobs:
 
           # 架构信息提取函数
           get_platforms() {
-            echo "$1" | sed -E 's/Platform: //g; s/, /\n/g' | tr -d ' ' \
-              | sed -e '/^unknown\/unknown$/d' -e '/^$/d' | sort -u | awk 'NF'
+            docker buildx imagetools inspect "$1" --format '{{ json . }}' 2>/dev/null | \
+            jq -r '.manifests[] | 
+            # 处理platform字段
+            if .platform != null then 
+                ([.platform.os, .platform.architecture, .platform.variant // ""] | 
+                join("/") | sub("/$"; "")) 
+            else empty end' | \
+            sort -u
           }
 
           while IFS= read -r rule; do
