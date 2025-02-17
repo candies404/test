@@ -7,7 +7,7 @@ on:
 
 jobs:
   docker-sync:
-    runs-on: ubuntu-latest  # 运行环境
+    runs-on: ubuntu-latest
     steps:
     - name: 检出代码
       uses: actions/checkout@v4
@@ -68,27 +68,40 @@ jobs:
           fi
           [[ "$target_spec" != *"/"* ]] && target_spec="$DOCKERHUB_USER/$target_spec"
 
-          # 增加同步超时控制
-          echo "🔄 同步 $src_image → $target_spec"
-          timeout 300 docker buildx imagetools create -t "$target_spec" "$src_image"
-          
-          # 收集同步结果
-          if (( $? != 0 )); then
+          ################ 核心修改部分 ################
+          # 计算digest哈希
+          timeout 60 sh -c "
+            src_digest=\$(docker buildx imagetools inspect --raw \"$src_image\" 2>/dev/null | sha256sum | cut -d' ' -f1)
+            target_digest=\$(docker buildx imagetools inspect --raw \"$target_spec\" 2>/dev/null | sha256sum | cut -d' ' -f1 || echo 'missing')
+            
+            if [ \"\$src_digest\" != \"\$target_digest\" ]; then
+              echo \"🔄 发现差异 [源:\${src_digest:0:12} vs 目标:\${target_digest:0:12}]，执行同步...\"
+              docker buildx imagetools create -t \"$target_spec\" \"$src_image\"
+              exit \$?
+            else
+              echo \"✅ 内容一致，跳过同步\"
+              exit 0
+            fi
+          " 
+          sync_result=$?
+          #############################################
+
+          # 结果处理
+          if (( sync_result != 0 )); then
             failed_rules+=("$rule")
-            echo "❌ 同步失败: $rule"
+            echo "❌ 同步失败: $rule (code $sync_result)"
             docker buildx imagetools inspect "$src_image" || true
-          else
-            echo "✅ 同步成功"
-            # 增加平台过滤逻辑（关键修改点）
+          elif (( sync_result == 0 )); then
+            echo "Platform详情:"
             docker buildx imagetools inspect "$target_spec" | \
-            grep -E 'Platform:|Size:' | \
-            grep -v 'Platform:.*unknown/unknown'
+              grep -E 'Platform:|Size:' | \
+              grep -v 'unknown/unknown' || true
           fi
           
           echo "─────────────────────────────────────"
         done <<< "$SYNC_RULES"
 
-        # 输出最终报告
+        # 最终报告
         echo "=== 同步结果报告 ==="
         echo "成功: $(( $(wc -l <<<"$SYNC_RULES") - ${#failed_rules[@]} )) 条"
         if (( ${#failed_rules[@]} > 0 )); then
