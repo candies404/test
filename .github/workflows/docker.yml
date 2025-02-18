@@ -1,4 +1,4 @@
-name: Multi-arch Image Sync
+name: Advanced Image Sync
 
 on:
   workflow_dispatch:
@@ -17,63 +17,105 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y  skopeo
-          curl -fsSL https://get.docker.com | sh
+          sudo apt-get install -y skopeo
 
       - name: Validate and process SYNC_MAPPINGS
         id: process-sync-mappings
         env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           SYNC_MAPPINGS_INPUT: ${{ inputs.sync_mappings || vars.SYNC_MAPPINGS }}
         run: |
+          # 基础校验
           if [ -z "$SYNC_MAPPINGS_INPUT" ]; then
             echo "::error::SYNC_MAPPINGS 未设置，请提供同步规则。"
             exit 1
           fi
 
-          IFS=',' read -ra RULES <<< "$SYNC_MAPPINGS_INPUT"
+          # 初始化变量
           declare -A processed_rules
           declare -A grouped_rules
           declare -a unique_sources
+          IFS=',' read -ra RAW_RULES <<< "$SYNC_MAPPINGS_INPUT"
 
-          for rule in "${RULES[@]}"; do
+          # 规则处理函数
+          process_rule() {
+            local source=$1
+            local target=$2
+
+            # 自动补全源镜像名称
+            if [[ "$source" != *"/"* && "$source" != *":"* ]]; then
+              source="docker.io/library/$source"
+            elif [[ "$source" == *":"* && "$source" != *"/"* ]]; then
+              source="docker.io/library/${source/:/:}"
+            fi
+
+            # 自动生成目标镜像名称
+            if [[ "$target" == *"+USERNAME"* ]]; then
+              target="${target//+USERNAME/$DOCKERHUB_USERNAME}"
+            fi
+
+            # 清理特殊字符
+            source=$(echo "$source" | tr -d '\r' | xargs)
+            target=$(echo "$target" | tr -d '\r' | xargs)
+
+            echo "$source=$target"
+          }
+
+          # 处理原始规则
+          for rule in "${RAW_RULES[@]}"; do
             rule=$(echo "$rule" | xargs)
             [[ -z "$rule" ]] && continue
 
-            if [[ "$rule" != *"="* ]]; then
-              echo "::warning::忽略无效规则 '$rule'"
+            # 拆分源和目标
+            if [[ "$rule" == *"="* ]]; then
+              source_part="${rule%%=*}"
+              target_part="${rule#*=}"
+            else
+              # 自动模式：源镜像+后缀
+              source_part="$rule"
+              target_part="${DOCKERHUB_USERNAME}/${rule//\//-}-mirror"
+            fi
+
+            # 处理镜像名称
+            full_rule=$(process_rule "$source_part" "$target_part")
+            source_image="${full_rule%%=*}"
+            dest_image="${full_rule#*=}"
+
+            # 有效性校验
+            if [[ -z "$source_image" || -z "$dest_image" ]]; then
+              echo "::warning::忽略无效规则: $rule"
               continue
             fi
 
-            source_image="${rule%%=*}"
-            dest_image="${rule#*=}"
-            source_image=$(echo "$source_image" | xargs)
-            dest_image=$(echo "$dest_image" | xargs)
-
-            [[ -z "$source_image" || -z "$dest_image" ]] && continue
-
-            key="$source_image=$dest_image"
-            [[ -n "${processed_rules[$key]}" ]] && continue
+            # 去重处理
+            key="${source_image}=${dest_image}"
+            if [[ -n "${processed_rules[$key]}" ]]; then
+              continue
+            fi
             processed_rules["$key"]=1
 
+            # 分组处理
             if [[ -z "${grouped_rules[$dest_image]}" ]]; then
               grouped_rules["$dest_image"]="$source_image"
             else
               grouped_rules["$dest_image"]+=" $source_image"
             fi
 
+            # 收集源镜像
             if [[ ! " ${unique_sources[@]} " =~ " ${source_image} " ]]; then
               unique_sources+=("$source_image")
             fi
           done
 
+          # 生成输出
           grouped_json=$(jq -n '{}')
           for dest in "${!grouped_rules[@]}"; do
             sources=(${grouped_rules[$dest]})
-            grouped_json=$(echo "$grouped_json" | jq --arg dest "$dest" --arg sources "${sources[*]}" '. + { ($dest): ($sources | split(" ")) }')
+            grouped_json=$(jq --arg dest "$dest" --argjson sources "${sources[*]}" '. + {($dest): $sources}' <<< "$grouped_json")
           done
 
-          echo "grouped_rules=$(echo $grouped_json | jq -c)" >> $GITHUB_OUTPUT
-          echo "unique_sources=$(jq -c -n '$unique_sources' --args ${unique_sources[@]})" >> $GITHUB_OUTPUT
+          echo "grouped_rules=$(jq -c . <<< "$grouped_json")" >> $GITHUB_OUTPUT
+          echo "unique_sources=$(jq -c -n '$ARGS.positional' --args "${unique_sources[@]}")" >> $GITHUB_OUTPUT
           echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
       - name: Check architectures
@@ -138,6 +180,8 @@ jobs:
       - name: Sync images
         id: sync-images
         run: |
+          echo "处理后的同步规则:"
+          echo "${{ steps.process-sync-mappings.outputs.grouped_rules }}" | jq .
           grouped_rules='${{ steps.process-sync-mappings.outputs.grouped_rules }}'
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
           SYNC_EXECUTED=0
