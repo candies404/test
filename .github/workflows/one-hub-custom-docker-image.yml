@@ -1,40 +1,51 @@
 name: Check Image Architectures
 
 on:
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   check-images:
     runs-on: ubuntu-latest
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Check architectures
         run: |
           IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma")
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
-            json_data=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' 2>/dev/null)
             
-            # 错误处理
-            if [ $? -ne 0 ]; then
-              echo "❌ 错误：无法获取镜像信息 $image"
+            # 获取深层 manifest 列表
+            manifest=$(docker manifest inspect "$image" 2>/dev/null)
+            if [ -z "$manifest" ]; then
+              echo "❌ 无法获取镜像清单 $image"
               continue
             fi
 
-            # 提取架构并去重
-            archs=$(echo "$json_data" | jq -r '[.[].platform | .os + "/" + .architecture + (if .variant then "/" + .variant else "" end)] | unique | join(", ")')
-            count=$(echo "$json_data" | jq 'length')
-            
-            # 判断类型
-            if [ $count -gt 1 ]; then
+            # 解析架构信息
+            archs=$(
+              echo "$manifest" | \
+              jq -r '
+                if .manifests then # 多架构镜像
+                  [.manifests[].platform | 
+                  .os + "/" + .architecture + ((.variant)? // "" | "/" + .)]
+                else # 单架构镜像
+                  [[.config.os, .config.architecture] | join("/")]
+                end
+                | if type == "string" then [.] else . end
+                | unique
+                | join(", ")
+              ' 2>/dev/null || echo "未知架构"
+            )
+
+            # 判断镜像类型
+            if echo "$manifest" | jq -e '.manifests' > /dev/null; then
               type="多架构"
             else
               type="单架构"
             fi
 
-            # 打印结果
             echo "镜像名称: $image"
             echo "架构类型: $type"
             echo "支持的架构: $archs"
