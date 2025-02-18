@@ -1,48 +1,42 @@
-name: 检测镜像架构类型
+name: Check Image Architectures
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
-  check-architectures:
-    runs-on: ubuntu-latest  # 使用 Ubuntu 最新版本作为运行环境
-
+  check-images:
+    runs-on: ubuntu-latest
     steps:
-    - name: 安装 skopeo
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y skopeo  # 安装 skopeo 工具
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: 检测镜像架构
-      run: |
-        # 定义需要检测的镜像列表
-        IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma")
-
-        for IMAGE in "${IMAGES[@]}"; do
-          echo "正在检测镜像: $IMAGE"
-          OUTPUT=$(skopeo inspect --raw docker://$IMAGE)  # 获取镜像元数据
-
-          # 判断是否为多架构镜像
-          if echo "$OUTPUT" | grep -q '"manifests":'; then
-            echo "$IMAGE 是多架构镜像"
-            # 提取并打印所有支持的架构，排除 unknown
-            ARCHITECTURES=$(echo "$OUTPUT" | jq -r '.manifests[].platform.architecture' | grep -v 'unknown' | sort | uniq | tr '\n' ', ')
-            echo "支持的架构类型: ${ARCHITECTURES%, }"
-          else
-            echo "$IMAGE 是单架构镜像"
-            # 提取单架构镜像的架构类型
-            ARCHITECTURE=$(echo "$OUTPUT" | jq -r '.architecture')
-            if [[ "$ARCHITECTURE" == "null" || -z "$ARCHITECTURE" ]]; then
-              # 如果 architecture 字段为空，尝试从 config.digest 推断
-              CONFIG_DIGEST=$(echo "$OUTPUT" | jq -r '.config.digest')
-              if [[ "$CONFIG_DIGEST" != "null" && -n "$CONFIG_DIGEST" ]]; then
-                echo "架构类型: 未知（但存在配置层，可能是 amd64）"
-              else
-                echo "架构类型: 未知"
-              fi
-            else
-              echo "架构类型: $ARCHITECTURE"
+      - name: Check architectures
+        run: |
+          IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma")
+          for image in "${IMAGES[@]}"; do
+            echo "处理镜像: $image"
+            json_data=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' 2>/dev/null)
+            
+            # 错误处理
+            if [ $? -ne 0 ]; then
+              echo "❌ 错误：无法获取镜像信息 $image"
+              continue
             fi
-          fi
-          echo "----------------------------------------"
-        done
+
+            # 提取架构并去重
+            archs=$(echo "$json_data" | jq -r '[.[].platform | .os + "/" + .architecture + (if .variant then "/" + .variant else "" end)] | unique | join(", ")')
+            count=$(echo "$json_data" | jq 'length')
+            
+            # 判断类型
+            if [ $count -gt 1 ]; then
+              type="多架构"
+            else
+              type="单架构"
+            fi
+
+            # 打印结果
+            echo "镜像名称: $image"
+            echo "架构类型: $type"
+            echo "支持的架构: $archs"
+            echo "----------------------------------------"
+          done
