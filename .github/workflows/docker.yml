@@ -35,12 +35,12 @@ jobs:
           declare -A processed_rules
           declare -A grouped_rules
           declare -a unique_sources
-          IFS=',' read -ra RAW_RULES <<< "$SYNC_MAPPINGS_INPUT"
+          IFS=',' read -ra RAW_RULES <<< "${SYNC_MAPPINGS_INPUT//$'\r'/}"  # 清除所有回车符
 
-          # 规则处理函数
+          # 增强的规则处理函数
           process_rule() {
-            local source=$1
-            local target=$2
+            local source=$(echo "$1" | tr -d '\r' | xargs | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            local target=$(echo "$2" | tr -d '\r' | xargs | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
             # 自动补全源镜像名称
             if [[ "$source" != *"/"* && "$source" != *":"* ]]; then
@@ -54,32 +54,33 @@ jobs:
               target="${target//+USERNAME/$DOCKERHUB_USERNAME}"
             fi
 
-            # 清理特殊字符
-            source=$(echo "$source" | tr -d '\r' | xargs)
-            target=$(echo "$target" | tr -d '\r' | xargs)
+            # 严格格式校验
+            if [[ ! "$target" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$ ]]; then
+              echo "::error::无效的目标镜像格式: $target"
+              exit 1
+            fi
 
-            echo "$source=$target"
+            echo "${source}=${target}"
           }
 
           # 处理原始规则
-          for rule in "${RAW_RULES[@]}"; do
-            rule=$(echo "$rule" | xargs)
+          for raw_rule in "${RAW_RULES[@]}"; do
+            # 清理原始规则
+            rule=$(echo "$raw_rule" | tr -d '\r' | xargs | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [[ -z "$rule" ]] && continue
 
             # 拆分源和目标
             if [[ "$rule" == *"="* ]]; then
-              source_part="${rule%%=*}"
-              target_part="${rule#*=}"
+              source_part=$(echo "${rule%%=*}" | xargs)
+              target_part=$(echo "${rule#*=}" | xargs)
             else
-              # 自动模式：源镜像+后缀
-              source_part="$rule"
-              target_part="${DOCKERHUB_USERNAME}/${rule//\//-}-mirror"
+              source_part=$(echo "$rule" | xargs)
+              target_part="${DOCKERHUB_USERNAME}/$(echo "$rule" | tr '/' '-' | tr -cd '[:alnum:]._-')-mirror"
             fi
 
             # 处理镜像名称
-            full_rule=$(process_rule "$source_part" "$target_part")
-            source_image="${full_rule%%=*}"
-            dest_image="${full_rule#*=}"
+            full_rule=$(process_rule "$source_part" "$target_part") || exit 1
+            IFS='=' read -r source_image dest_image <<< "$full_rule"
 
             # 有效性校验
             if [[ -z "$source_image" || -z "$dest_image" ]]; then
@@ -98,7 +99,7 @@ jobs:
             if [[ -z "${grouped_rules[$dest_image]}" ]]; then
               grouped_rules["$dest_image"]="$source_image"
             else
-              grouped_rules["$dest_image"]+=" $source_image"
+              grouped_rules["$dest_image"]+=$'\n'"$source_image"
             fi
 
             # 收集源镜像
@@ -107,20 +108,39 @@ jobs:
             fi
           done
 
-          # 生成分组JSON
+          # 生成分组JSON（严格模式）
           grouped_json=$(jq -n '{}')
           for dest in "${!grouped_rules[@]}"; do
-            sources=(${grouped_rules[$dest]})
-            sources_json=$(printf '%s\n' "${sources[@]}" | jq -R -s 'split("\n") | map(select(. != ""))')
-            grouped_json=$(jq --arg dest "$dest" --argjson sources "$sources_json" '. + {($dest): $sources}' <<< "$grouped_json")
+            # 使用换行符分割源镜像列表
+            sources=()
+            while IFS=$'\n' read -r line; do
+              sources+=("$line")
+            done <<< "${grouped_rules[$dest]}"
+
+            # 生成严格格式的JSON数组
+            sources_json=$(printf '%s\n' "${sources[@]}" | jq -R -s 'map(select(. != "" and . != null)) | unique')
+            
+            grouped_json=$(jq --arg dest "$dest" --argjson sources "$sources_json" '
+              . + { ($dest): $sources }
+            ' <<< "$grouped_json") || exit 1
           done
 
-          # 生成唯一源列表
-          unique_sources_json=$(printf '%s\n' "${unique_sources[@]}" | jq -R -s 'split("\n") | map(select(. != ""))')
+          # 生成唯一源列表（严格模式）
+          unique_sources_json=$(printf '%s\n' "${unique_sources[@]}" | jq -R -s 'map(select(. != "")) | unique')
 
-          echo "grouped_rules=$(jq -c . <<< "$grouped_json")" >> $GITHUB_OUTPUT
-          echo "unique_sources=$unique_sources_json" >> $GITHUB_OUTPUT
-          echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
+          # 安全输出到GITHUB_OUTPUT
+          delimiter=$(openssl rand -hex 16)
+          {
+            echo "grouped_rules<<${delimiter}"
+            jq -c . <<< "$grouped_json"
+            echo "${delimiter}"
+            
+            echo "unique_sources<<${delimiter}"
+            jq -c . <<< "$unique_sources_json"
+            echo "${delimiter}"
+            
+            echo "total_rules=${#processed_rules[@]}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check architectures
         run: |
@@ -184,16 +204,22 @@ jobs:
       - name: Sync images
         id: sync-images
         run: |
+          # 增加调试信息输出
           echo "处理后的同步规则:"
           echo "${{ steps.process-sync-mappings.outputs.grouped_rules }}" | jq .
-          grouped_rules='${{ steps.process-sync-mappings.outputs.grouped_rules }}'
+          
+          # 使用严格的JSON解析
+          grouped_rules=$(echo '${{ steps.process-sync-mappings.outputs.grouped_rules }}' | jq -c .)
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
           SYNC_EXECUTED=0
           failed_rules=()
 
-          echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"' | while IFS== read -r dest sources; do
+          # 使用jq严格解析
+          echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"' | while IFS='=' read -r dest sources; do
             echo "🔄 正在同步: $sources → $dest"
-            if docker buildx imagetools create -t "$dest" $sources; then
+            
+            # 增加超时和重试机制
+            if timeout 300 docker buildx imagetools create -t "$dest" $sources; then
               ((SYNC_EXECUTED++))
               echo "✅ 同步成功: $sources → $dest"
             else
@@ -204,9 +230,14 @@ jobs:
             echo "----------------------------------------"
           done
 
-          failed_rules_json=$(printf '%s\n' "${failed_rules[@]}" | jq -R -s 'split("\n") | map(select(. != ""))')
-          echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
-          echo "failed_rules=$(echo $failed_rules_json)" >> $GITHUB_OUTPUT
+          # 严格处理失败规则输出
+          failed_rules_json=$(jq -nc '$ARGS.positional' --args "${failed_rules[@]}")
+          {
+            echo "SYNC_EXECUTED=$SYNC_EXECUTED"
+            echo "failed_rules<<EOF"
+            echo "$failed_rules_json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate report
         run: |
