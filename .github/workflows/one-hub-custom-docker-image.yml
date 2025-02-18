@@ -1,4 +1,4 @@
-name: Check Image Architectures (Fixed)
+name: Check Image Architectures (Filtered)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo jq
+          sudo apt-get install -y skopeo
 
       - name: Check architectures
         run: |
@@ -19,32 +19,29 @@ jobs:
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
             
-            # 获取原始manifest并提取关键信息（带调试日志）
+            # 获取原始manifest
             if ! raw_data=$(skopeo inspect --raw docker://$image 2>&1); then
               echo "[错误] 无法获取镜像: $raw_data"
               echo "----------------------------------------"
               continue
             fi
 
-            # 获取完整manifest内容（调试用）
-            # echo "原始清单内容："
-            # echo "$raw_data" | jq .
-
-            # 增强的多架构检测逻辑
+            # 多架构检测逻辑
             if echo "$raw_data" | jq -e '.manifests and (.mediaType | contains("manifest.list"))' >/dev/null; then
               archs=$(echo "$raw_data" | jq -r '
                 [.manifests[] | 
                 .platform as $p |
+                select($p.os != null and $p.architecture != null and $p.os != "unknown" and $p.architecture != "unknown") |
                 "\($p.os)/\($p.architecture)" +
                 (if $p.variant and $p.variant != "" then "/\($p.variant)" else "" end)
                 ] | unique | join(", ")
               ')
               type="多架构"
             elif echo "$raw_data" | jq -e '.manifests' >/dev/null; then
-              # 处理非标准的多架构格式
               archs=$(echo "$raw_data" | jq -r '
                 [.manifests[] | 
                 .platform as $p |
+                select($p.os != null and $p.architecture != null and $p.os != "unknown" and $p.architecture != "unknown") |
                 "\($p.os)/\($p.architecture)" +
                 (if $p.variant and $p.variant != "" then "/\($p.variant)" else "" end)
                 ] | unique | join(", ")
@@ -55,9 +52,16 @@ jobs:
               os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
               arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
               variant=$(echo "$inspect_info" | jq -r '.Variant? // ""')
-              archs="${os}/${arch}${variant:+/$variant}"
+              if [[ "$os" != "unknown" && "$arch" != "unknown" ]]; then
+                archs="${os}/${arch}${variant:+/$variant}"
+              else
+                archs="<无效架构>"
+              fi
               type="单架构"
             fi
+
+            # 过滤空值的情况
+            [ "$archs" = "" ] && archs="<无有效架构>"
 
             printf "镜像名称: %s\n架构类型: %s\n支持架构: %s\n%s\n" \
               "$image" "$type" "${archs}" "----------------------------------------"
