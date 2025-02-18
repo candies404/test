@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y skopeo
-          
+
       - name: Validate and process SYNC_MAPPINGS
         id: process-sync-mappings
         env:
@@ -140,7 +140,9 @@ jobs:
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
           SYNC_EXECUTED=0
           failed_rules=()
-          echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"' | while IFS== read -r dest sources; do
+          
+          # 使用进程替换避免子shell问题
+          while IFS== read -r dest sources; do
             echo "🔄 正在同步: $sources → $dest"
             if docker buildx imagetools create -t "$dest" $sources; then
               ((SYNC_EXECUTED++))
@@ -151,10 +153,17 @@ jobs:
               failed_rules+=("$error_msg")
             fi
             echo "----------------------------------------"
-          done
-          failed_rules_json=$(printf '%s\n' "${failed_rules[@]}" | jq -R -s 'split("\n") | map(select(. != ""))')
+          done < <(echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"')
+
+          # 显式设置退出状态
+          if [ ${#failed_rules[@]} -gt 0 ]; then
+            echo "::error::存在失败的同步任务"
+            exit 1
+          fi
+
+          failed_rules_json=$(jq -c -n '$ARGS.positional' --args "${failed_rules[@]}")
           echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
-          echo "failed_rules=$(echo $failed_rules_json)" >> $GITHUB_OUTPUT
+          echo "failed_rules=$failed_rules_json" >> $GITHUB_OUTPUT
 
       - name: Generate report
         run: |
