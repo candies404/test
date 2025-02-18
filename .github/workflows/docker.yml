@@ -107,15 +107,19 @@ jobs:
             fi
           done
 
-          # 生成输出
+          # 生成分组JSON
           grouped_json=$(jq -n '{}')
           for dest in "${!grouped_rules[@]}"; do
             sources=(${grouped_rules[$dest]})
-            grouped_json=$(jq --arg dest "$dest" --argjson sources "${sources[*]}" '. + {($dest): $sources}' <<< "$grouped_json")
+            sources_json=$(printf '%s\n' "${sources[@]}" | jq -R -s 'split("\n") | map(select(. != ""))')
+            grouped_json=$(jq --arg dest "$dest" --argjson sources "$sources_json" '. + {($dest): $sources}' <<< "$grouped_json")
           done
 
+          # 生成唯一源列表
+          unique_sources_json=$(printf '%s\n' "${unique_sources[@]}" | jq -R -s 'split("\n") | map(select(. != ""))')
+
           echo "grouped_rules=$(jq -c . <<< "$grouped_json")" >> $GITHUB_OUTPUT
-          echo "unique_sources=$(jq -c -n '$ARGS.positional' --args "${unique_sources[@]}")" >> $GITHUB_OUTPUT
+          echo "unique_sources=$unique_sources_json" >> $GITHUB_OUTPUT
           echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
       - name: Check architectures
