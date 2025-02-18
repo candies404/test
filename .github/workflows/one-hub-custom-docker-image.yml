@@ -10,43 +10,59 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq podman skopeo  # 安装 skopeo
+
       - name: Check architectures
         run: |
           IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma")
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
             
-            # 获取镜像清单
+            # 获取基本信息
             manifest=$(docker manifest inspect "$image" 2>/dev/null || true)
             if [ -z "$manifest" ]; then
-              echo "❌ 无法获取镜像清单 $image"
+              skopeo_data=$(skopeo inspect docker://${image} || true)
+              os=$(jq -r '.Os' <<< "$skopeo_data" || echo "unknown")
+              arch=$(jq -r '.Architecture' <<< "$skopeo_data" || echo "unknown")
+              echo "镜像名称: $image"
+              echo "架构类型: 单架构 (通过 skopeo)"
+              echo "支持的架构: $os/$arch"
+              echo "----------------------------------------"
               continue
             fi
 
-            # 解析架构信息
-            archs=$(echo "$manifest" | jq -r '
-              if .manifests then 
-                [.manifests[].platform | 
-                  (.os // "unknown") + "/" + 
-                  (.architecture // "unknown") + 
-                  (if .variant and .variant != "" then "/" + .variant else "" end)
-                ] | unique | join(", ")
-              else 
-                # 从容器配置层提取信息
-                (try (.config.os // "linux") catch "linux") + "/" +
-                (try (.config.architecture // .architecture) catch "unknown")
-              end
-            ' 2>/dev/null || echo "解析失败")
-
-            # 判断镜像类型
+            # 多架构解析
             if echo "$manifest" | jq -e '.manifests' >/dev/null; then
+              archs=$(echo "$manifest" | jq -r '
+                [.manifests[].platform | 
+                "\(.os // "unknown")/\(.architecture // "unknown")\(if .variant then "/\(.variant)" else "" end)"
+                ] | unique | join(", ")
+              ')
               type="多架构"
             else
+              # 优先用 skopeo 获取信息
+              skopeo_data=$(skopeo inspect docker://${image} 2>/dev/null || true)
+              if [ -n "$skopeo_data" ]; then
+                os_override=$(jq -r '.Os // empty' <<< "$skopeo_data")
+                arch_override=$(jq -r '.Architecture // empty' <<< "$skopeo_data")
+              fi
+              
+              # 综合 docker manifest 和 skopeo 数据
+              archs=$(echo "$manifest" | jq -r '
+                ([.config.os // $os_override // "unknown", 
+                 .config.architecture // $arch_override // .architecture // "unknown"] | join("/"))
+                + (if .config.variant then "/\(.config.variant)" else "" end)
+              ' --arg os_override "${os_override:-null}" \
+                --arg arch_override "${arch_override:-null}")
+              
               type="单架构"
             fi
 
             echo "镜像名称: $image"
             echo "架构类型: $type"
-            echo "支持的架构: $archs"
+            echo "支持的架构: ${archs:-未识别}"
             echo "----------------------------------------"
           done
