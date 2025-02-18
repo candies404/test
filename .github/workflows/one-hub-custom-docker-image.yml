@@ -1,81 +1,66 @@
-name: Multi-Image Architecture Check
+
+name: Check Image Architectures
 
 on:
   workflow_dispatch:
 
 jobs:
-  check-arch:
+  check-images:
     runs-on: ubuntu-latest
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq podman skopeo  # 安装 skopeo
       - name: Check architectures
         run: |
-          #!/bin/bash
-          set -eo pipefail
-
-          IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma:latest")
-          
-          for FULL_IMAGE in "${IMAGES[@]}"; do
-          (
-            echo "▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄"
-            echo "  处理镜像: $FULL_IMAGE"
-            echo "▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀"
-
-            # Split image into repo and tag
-            if [[ "$FULL_IMAGE" == *":"* ]]; then
-              REPOSITORY="${FULL_IMAGE%:*}"
-              TAG="${FULL_IMAGE#*:}"
-            else
-              REPOSITORY="$FULL_IMAGE"
-              TAG="latest"
-            fi
-
-            # Step 1: Get Docker registry token
-            TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPOSITORY}:pull" | jq -r '.token')
-            [[ -z "$TOKEN" ]] && { echo "❌ 无法获取访问令牌"; exit 1; }
-            echo "::add-mask::$TOKEN"
-
-            # Step 2: Get image manifest
-            MANIFEST_HEADER="Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
-            MANIFEST_JSON=$(curl -sf -H "Authorization: Bearer $TOKEN" -H "$MANIFEST_HEADER" \
-              "https://registry-1.docker.io/v2/${REPOSITORY}/manifests/${TAG}")
-
-            # Step 3: Detect manifest type
-            MANIFEST_TYPE=$(jq -r '.mediaType' <<< "$MANIFEST_JSON")
+          IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
+          for image in "${IMAGES[@]}"; do
+            echo "处理镜像: $image"
             
-            # Case 1: Multi-architecture manifest list
-            if [[ "$MANIFEST_TYPE" == "application/vnd.docker.distribution.manifest.list.v2+json" ]]; then
-              ARCHITECTURES=$(jq -r '
+            # 获取基本信息
+            manifest=$(docker manifest inspect "$image" 2>/dev/null || true)
+            if [ -z "$manifest" ]; then
+              skopeo_data=$(skopeo inspect docker://${image} || true)
+              os=$(jq -r '.Os' <<< "$skopeo_data" || echo "unknown")
+              arch=$(jq -r '.Architecture' <<< "$skopeo_data" || echo "unknown")
+              echo "镜像名称: $image"
+              echo "架构类型: 单架构 (通过 skopeo)"
+              echo "支持的架构: $os/$arch"
+              echo "----------------------------------------"
+              continue
+            fi
+            # 多架构解析
+            if echo "$manifest" | jq -e '.manifests' >/dev/null; then
+              archs=$(echo "$manifest" | jq -r '
                 [.manifests[].platform | 
                 "\(.os // "unknown")/\(.architecture // "unknown")\(if .variant then "/\(.variant)" else "" end)"
-                ] | unique | join(", ")' <<< "$MANIFEST_JSON")
-              
-              echo "镜像名称: $FULL_IMAGE"
-              echo "架构类型: 多架构 🔄"
-              echo "支持架构: $ARCHITECTURES"
-
-            # Case 2: Single-architecture image
+                ] | unique | join(", ")
+              ')
+              type="多架构"
             else
-              # Get config digest for single arch
-              CONFIG_DIGEST=$(jq -r '.config.digest' <<< "$MANIFEST_JSON")
-              [[ "$CONFIG_DIGEST" == "null" ]] && { echo "❌ 找不到配置摘要"; exit 1; }
-
-              # Get detailed config info
-              CONFIG_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
-                "https://registry-1.docker.io/v2/${REPOSITORY}/blobs/${CONFIG_DIGEST}")
-
-              # Parse architecture info
-              OS=$(jq -r '.os // "linux"' <<< "$CONFIG_JSON")
-              ARCH=$(jq -r '.architecture // "unknown"' <<< "$CONFIG_JSON")
-              VARIANT=$(jq -r '.variant // ""' <<< "$CONFIG_JSON")
+              # 优先用 skopeo 获取信息
+              skopeo_data=$(skopeo inspect docker://${image} 2>/dev/null || true)
+              if [ -n "$skopeo_data" ]; then
+                os_override=$(jq -r '.Os // empty' <<< "$skopeo_data")
+                arch_override=$(jq -r '.Architecture // empty' <<< "$skopeo_data")
+              fi
               
-              FULL_ARCH="${OS}/${ARCH}"
-              [[ -n "$VARIANT" ]] && FULL_ARCH+="/${VARIANT}"
+              # 综合 docker manifest 和 skopeo 数据
+              archs=$(echo "$manifest" | jq -r '
+                ([.config.os // $os_override // "unknown", 
+                 .config.architecture // $arch_override // .architecture // "unknown"] | join("/"))
+                + (if .config.variant then "/\(.config.variant)" else "" end)
+              ' --arg os_override "${os_override:-null}" \
+                --arg arch_override "${arch_override:-null}")
               
-              echo "镜像名称: $FULL_IMAGE"
-              echo "架构类型: 单架构 🎯"
-              echo "系统架构: $FULL_ARCH"
+              type="单架构"
             fi
-
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          ) || echo "⚠️ 镜像处理失败: $FULL_IMAGE"
+            echo "镜像名称: $image"
+            echo "架构类型: $type"
+            echo "支持的架构: ${archs:-未识别}"
+            echo "----------------------------------------"
           done
