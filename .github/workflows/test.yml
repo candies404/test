@@ -29,7 +29,7 @@ jobs:
       - name: 安装依赖工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo 
+          sudo apt-get install -y skopeo jq
 
       - name: 登录DockerHub
         uses: docker/login-action@v3
@@ -60,52 +60,52 @@ jobs:
           SYNC_EXECUTED=0
           SYNC_SKIPPED=0
 
-          # 新版架构解析函数
+          # 增强版架构解析函数
           get_platforms() {
             local raw_data="$1"
-            local platforms=""
+            [[ -z "$raw_data" ]] && return
 
-            # 判断是否为多架构镜像
-            if echo "$raw_data" | jq -e '.manifests and (.mediaType // "" | contains("manifest.list"))' >/dev/null; then
-              platforms=$(echo "$raw_data" | jq -r '
-                [.manifests[] | 
+            # 处理多架构镜像
+            if echo "$raw_data" | jq -e '.manifests' >/dev/null; then
+              echo "$raw_data" | jq -r '
+                .manifests[] | 
                 .platform as $p |
                 select(
-                  ($p.os? != null) and 
-                  ($p.architecture? != null) and 
-                  ($p.os? != "unknown") and 
-                  ($p.architecture? != "unknown")
+                  ($p.os != null) and 
+                  ($p.architecture != null) and 
+                  ($p.os != "unknown") and 
+                  ($p.architecture != "unknown")
                 ) |
                 "\($p.os)/\($p.architecture)" +
-                (if $p.variant? and $p.variant != "" then "/\($p.variant)" else "" end)
-                ] | unique[]'
-              )
-            elif echo "$raw_data" | jq -e '.manifests' >/dev/null; then  # 其他多manifest格式
-              platforms=$(echo "$raw_data" | jq -r '
-                [.manifests[] | 
-                .platform as $p |
-                select(
-                  ($p.os? != null) and 
-                  ($p.architecture? != null) and 
-                  ($p.os? != "unknown") and 
-                  ($p.architecture? != "unknown")
-                ) |
-                "\($p.os)/\($p.architecture)" +
-                (if $p.variant? and $p.variant != "" then "/\($p.variant)" else "" end)
-                ] | unique[]'
-              )
-            else  # 处理单架构镜像
-              os=$(echo "$raw_data" | jq -r '.Os // "unknown"')
-              arch=$(echo "$raw_data" | jq -r '.Architecture // "unknown"')
-              variant=$(echo "$raw_data" | jq -r '.Variant? // ""')
-              
-              if [[ "$os" != "unknown" && "$arch" != "unknown" ]]; then
-                platforms="${os}/${arch}${variant:+/$variant}"
+                (if $p.variant and $p.variant != "" then "/\($p.variant)" else "" end)
+              ' | sort -u
+            else
+              # 处理单架构镜像的多格式兼容
+              if echo "$raw_data" | jq -e '.architecture' >/dev/null; then
+                os=$(echo "$raw_data" | jq -r '.os // "linux"')
+                arch=$(echo "$raw_data" | jq -r '.architecture')
+                variant=$(echo "$raw_data" | jq -r '.variant // ""')
+                
+                # ARM架构变体自动修正
+                [[ "$arch" == "arm" && "$variant" =~ ^v[0-9]+$ ]] && variant="${variant#v}"
+                [[ "$arch" == "amd64" ]] && variant=""
+                
+                echo "${os}/${arch}${variant:+/$variant}"
+              else
+                # 兼容Docker v2 manifest格式
+                echo "$raw_data" | jq -r '
+                  if .mediaType? == "application/vnd.docker.distribution.manifest.v2+json" then
+                    "linux/\(.architecture // "unknown")"
+                  else
+                    empty
+                  end
+                ' | grep -v "unknown"
               fi
-            fi
+            fi | grep -vE 'unknown|^$' | sort -u
+          }
 
-            # 清理和标准化输出
-            echo "$platforms" | grep -vE '^(unknown|\\s*$)' | awk 'NF' | sort -u
+          check_image_exists() {
+            skopeo inspect "docker://$1" >/dev/null 2>&1
           }
 
           while IFS= read -r rule; do
@@ -141,68 +141,96 @@ jobs:
             final_spec+=":$target_tag"
 
             #======= 架构分析 =======#
-            raw_src_platforms=$(skopeo inspect --raw "docker://$src_image" 2>/dev/null || true)
-            src_platforms=$(get_platforms "$raw_src_platforms")
-            
-            echo "🔎 源镜像架构 ($(echo "$src_platforms" | grep -c '^' || echo 0) 种)" 
-            [[ -n "$src_platforms" ]] && echo "$src_platforms" | sed 's/^/  ➜ /'
-            [[ -z "$src_platforms" ]] && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
+            echo "🔍 校验源镜像 $src_image ..."
+            raw_src_data=$(skopeo inspect --raw "docker://$src_image" 2>&1 || true)
+            src_platforms=$(get_platforms "$raw_src_data")
+            if [[ -z "$src_platforms" ]]; then
+              echo "❌ 无法获取源镜像架构信息:"
+              grep -i 'error' <<< "$raw_src_data" | head -n3
+              failed_rules+=("$rule")
+              continue
+            fi
+
+            echo "🔎 源镜像支持架构 ($(echo "$src_platforms" | wc -w) 种)"
+            echo "$src_platforms" | sed 's/^/  ➤ /'
 
             #======= 目标镜像分析 =======#
-            echo "✳️ 最终目标镜像: $final_spec"
-            raw_target_platforms=$(skopeo inspect --raw "docker://$final_spec" 2>/dev/null || true)
-            target_platforms=$(get_platforms "$raw_target_platforms")
+            echo "✳️ 校验目标镜像 $final_spec ..."
+            if check_image_exists "$final_spec"; then
+              raw_target_data=$(skopeo inspect --raw "docker://$final_spec" 2>&1 || true)
+              target_platforms=$(get_platforms "$raw_target_data")
+              [[ -z "$target_platforms" ]] && echo "⚠️ 目标镜像存在但无法解析架构"
+            else
+              echo "🔍 目标镜像不存在，将进行初始化"
+              target_platforms=""
+            fi
 
-            echo "📦 目标镜像架构 ($(echo "$target_platforms" | grep -c '^' || echo 0) 种)" 
-            [[ -n "$target_platforms" ]] && echo "$target_platforms" | sed 's/^/  ➜ /'
+            echo "📦 当前目标镜像架构 ($(echo "$target_platforms" | wc -w || echo 0) 种)"
+            [[ -n "$target_platforms" ]] && echo "$target_platforms" | sed 's/^/  ➤ /'
 
             #======= 同步策略 =======#
             if [[ -z "$target_platforms" ]]; then
-              echo "🆕 初始化镜像..."
-              timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image"
+              echo "🆕 初始化目标镜像..."
+              timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" || {
+                echo "❌ 初始化失败"; 
+                failed_rules+=("$rule");
+                continue
+              }
               SYNC_EXECUTED=$((SYNC_EXECUTED+1))
             else
-              missing_platforms=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$target_platforms"))
+              missing_platforms=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$target_platforms" | sort))
               if [[ -n "$missing_platforms" ]]; then
-                echo "🔄 差异架构 ($(wc -l <<< "$missing_platforms" | tr -d ' ') 种)" && sed 's/^/  ➤ /' <<< "$missing_platforms"
+                echo "🔄 缺失架构 ($(wc -l <<< "$missing_platforms") 种)" 
+                echo "$missing_platforms" | sed 's/^/  ➤ /'
                 timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append || {
-                  echo "⚡ 增量失败，尝试强制覆盖"; 
-                  timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force;
+                  echo "⚡ 增量同步失败，尝试强制覆盖..."
+                  timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force
                 }
                 SYNC_EXECUTED=$((SYNC_EXECUTED+1))
               else
-                echo "⏭️ 已保持最新，跳过同步"
+                echo "⏭️ 已包含全部架构，无需同步"
                 SYNC_SKIPPED=$((SYNC_SKIPPED+1))
               fi
             fi
 
             #======= 结果验证 =======#
-            raw_final_platforms=$(skopeo inspect --raw "docker://$final_spec" 2>/dev/null || true)
-            final_platforms=$(get_platforms "$raw_final_platforms")
-            
-            missing_check=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$final_platforms"))
+            raw_final_data=$(skopeo inspect --raw "docker://$final_spec" 2>&1 || true)
+            final_platforms=$(get_platforms "$raw_final_data")
+            missing_check=$(comm -23 <(echo "$src_platforms" | sort) <(echo "$final_platforms" | sort))
+
+            echo "✅ 最终校验结果："
             if [[ -n "$missing_check" ]]; then
-              echo "❌ 验证失败，缺少架构：" && sed 's/^/  ▸ /' <<< "$missing_check"
+              echo "❌ 缺失架构 ($(wc -l <<< "$missing_check") 种)"
+              echo "$missing_check" | sed 's/^/  ▸ /'
               failed_rules+=("$rule")
             else
-              echo "✅ 验证通过" 
-              skopeo inspect docker://$final_spec | jq -r '.Architecture, .Os, .Variant' | 
-                awk 'BEGIN{print "  ✨ 最终架构详情:"} 
-                     /./{printf "  %-12s %s\n", toupper($0) ":", $0}' 
+              echo "✔️ 所有架构已同步完成"
+              skopeo inspect "docker://$final_spec" | jq '
+                {
+                  OS: .Os,
+                  Architecture: .Architecture,
+                  Variant: (if .Variant == "" then null else .Variant end),
+                  Created: .Created
+                }' | awk ' 
+                  /:/ { 
+                    key=$1; gsub(/"/, "", key); 
+                    value=$0; sub(/^[^:]+: /, "", value); 
+                    printf "  🏷️  %-12s %s\n", key, value 
+                  }'
             fi
 
             echo "─────────────────────────────────────"
           done <<< "$SYNC_RULES"
 
-          #======= 最终报告 =======#
-          total_rules=$(wc -l <<< "$SYNC_RULES" | tr -d ' ')
-          echo "📊=== 同步报告 ==="
-          echo "🔢 处理总数 | $total_rules"
-          echo "🟢 成功同步 | $SYNC_EXECUTED"
-          echo "🟡 跳过同步 | $SYNC_SKIPPED"
-          echo "🔴 同步失败 | ${#failed_rules[@]}"
+          #======= 生成报告 =======#
+          total_rules=$(echo "$SYNC_RULES" | wc -l | tr -d ' ')
+          echo "📊=== 执行报告 ==="
+          echo "🔢 规则总数 | $total_rules"
+          echo "🟩 成功同步 | $SYNC_EXECUTED"
+          echo "🟨 跳过同步 | $SYNC_SKIPPED"
+          echo "🟥 失败规则 | ${#failed_rules[@]}"
           if ((${#failed_rules[@]} > 0)); then
-            echo "🔥 失败详情："
+            echo "🔥 失败规则列表："
             printf "  ‼️ %s\n" "${failed_rules[@]}"
             exit 1
           fi
