@@ -1,4 +1,4 @@
-name: Check Image Architectures
+name: Check Image Architectures (skopeo only)
 
 on:
   workflow_dispatch:
@@ -7,32 +7,52 @@ jobs:
   check-images:
     runs-on: ubuntu-latest
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
 
       - name: Check architectures
         run: |
           IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
+          
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
             
-            # 获取manifest信息
-            manifest=$(docker manifest inspect "$image" 2>/dev/null || true)
+            # 获取原始manifest
+            if ! raw_manifest=$(skopeo inspect --raw docker://$image 2>&1); then
+              echo "[错误] 无法获取镜像信息: $raw_manifest"
+              echo "----------------------------------------"
+              continue
+            fi
+
+            # 检测清单类型
+            media_type=$(echo "$raw_manifest" | jq -r '.mediaType // "unknown"' 2>/dev/null)
             
-            # 多架构逻辑
-            if [[ $(jq -e '.manifests' <<< "$manifest") ]]; then
-              archs=$(jq -r '[.manifests[].platform | 
-                "\(.os)/\(.architecture)\(.variant? | if . then "/"+. else "" end)"
-                ] | unique | join(", ")' <<< "$manifest")
+            # 处理多架构镜像
+            if [[ "$media_type" =~ (manifest.list.v2|oci.index.v1) ]]; then
+              archs=$(echo "$raw_manifest" | jq -r '
+                [.manifests[].platform |
+                "\(.os)/\(.architecture)" + 
+                (if .variant and .variant != "" then "/" + .variant else "" end)
+                ] | unique | join(", ")
+              ' 2>/dev/null || echo "unknown")
               type="多架构"
+
+            # 处理单架构镜像
             else
-              # 单架构逻辑解析config
-              os=$(jq -r '.config.os // .schemaVendorManifest.mediaType | split("/")[1] // "unknown"' <<< "$manifest")
-              arch=$(jq -r '.config.architecture // .architecture // "unknown"' <<< "$manifest")
-              variant=$(jq -r '.config.variant // ""' <<< "$manifest")
+              if ! inspect_info=$(skopeo inspect docker://$image 2>/dev/null); then
+                echo "[警告] 获取单架构信息失败"
+                inspect_info="{}"
+              fi
+              
+              os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
+              arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
+              variant=$(echo "$inspect_info" | jq -r '.Variant // ""')
               archs=${os}/${arch}${variant:+/$variant}
               type="单架构"
             fi
 
             printf "镜像名称: %s\n架构类型: %s\n支持架构: %s\n%s\n" \
-              "$image" "$type" "${archs}" "----------------------------------------"
+              "$image" "$type" "${archs:-未识别}" "----------------------------------------"
           done
