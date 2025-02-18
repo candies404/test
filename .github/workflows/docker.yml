@@ -25,49 +25,85 @@ jobs:
           SYNC_MAPPINGS_INPUT: ${{ inputs.sync_mappings || vars.SYNC_MAPPINGS }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
+          # 定义镜像名称正则表达式
+          IMAGE_REGEX='^([a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$'
+
+          function validate_image() {
+            local image=$1
+            local type=$2
+            
+            # 清理控制字符和首尾空格
+            clean_image=$(echo "$image" | tr -d '\r\n' | xargs)
+            
+            # 自动补全逻辑
+            if [[ "$type" == "source" && "$clean_image" != */* ]]; then
+              clean_image="docker.io/library/${clean_image}"
+            elif [[ "$type" == "dest" && "$clean_image" != */* ]]; then
+              clean_image="${DOCKERHUB_USERNAME}/${clean_image}"
+            fi
+
+            # 格式验证
+            if [[ ! "$clean_image" =~ $IMAGE_REGEX ]]; then
+              echo "::error::无效的${type}镜像格式: $image → $clean_image"
+              return 1
+            fi
+            
+            echo "$clean_image"
+          }
+
+          # 主处理逻辑
           if [ -z "$SYNC_MAPPINGS_INPUT" ]; then
             echo "::error::SYNC_MAPPINGS 未设置，请提供同步规则。"
             exit 1
           fi
-          IFS=',' read -ra RULES <<< "$SYNC_MAPPINGS_INPUT"
+
           declare -A processed_rules
           declare -A grouped_rules
           declare -a unique_sources
+          
+          IFS=',' read -ra RULES <<< "$SYNC_MAPPINGS_INPUT"
           for rule in "${RULES[@]}"; do
             rule=$(echo "$rule" | xargs)
             [[ -z "$rule" ]] && continue
+
             if [[ "$rule" != *"="* ]]; then
               echo "::warning::忽略无效规则 '$rule'"
               continue
             fi
-            source_image="${rule%%=*}"
-            dest_image="${rule#*=}"
-            source_image=$(echo "$source_image" | xargs)
-            dest_image=$(echo "$dest_image" | xargs)
-            [[ -z "$source_image" || -z "$dest_image" ]] && continue
 
-            # 自动补全源镜像前缀
-            if [[ "$source_image" != */* ]]; then
-              source_image="docker.io/library/${source_image}"
+            # 拆分原始输入
+            raw_source="${rule%%=*}"
+            raw_dest="${rule#*=}"
+
+            # 验证并处理源镜像
+            if ! source_image=$(validate_image "$raw_source" "source"); then
+              exit 1
             fi
 
-            # 自动补全目标镜像前缀
-            if [[ "$dest_image" != */* ]]; then
-              dest_image="${DOCKERHUB_USERNAME}/${dest_image}"
+            # 验证并处理目标镜像
+            if ! dest_image=$(validate_image "$raw_dest" "dest"); then
+              exit 1
             fi
 
+            # 去重处理
             key="$source_image=$dest_image"
             [[ -n "${processed_rules[$key]}" ]] && continue
             processed_rules["$key"]=1
+
+            # 分组聚合
             if [[ -z "${grouped_rules[$dest_image]}" ]]; then
               grouped_rules["$dest_image"]="$source_image"
             else
               grouped_rules["$dest_image"]+=" $source_image"
             fi
+
+            # 记录唯一源
             if [[ ! " ${unique_sources[@]} " =~ " ${source_image} " ]]; then
               unique_sources+=("$source_image")
             fi
           done
+
+          # 生成输出
           grouped_json=$(jq -n '{}')
           for dest in "${!grouped_rules[@]}"; do
             sources=(${grouped_rules[$dest]})
