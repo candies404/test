@@ -16,31 +16,30 @@ jobs:
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
             
-            # 获取深层 manifest 列表
-            manifest=$(docker manifest inspect "$image" 2>/dev/null)
+            # 获取镜像清单
+            manifest=$(docker manifest inspect "$image" 2>/dev/null || true)
             if [ -z "$manifest" ]; then
               echo "❌ 无法获取镜像清单 $image"
               continue
             fi
 
             # 解析架构信息
-            archs=$(
-              echo "$manifest" | \
-              jq -r '
-                if .manifests then # 多架构镜像
-                  [.manifests[].platform | 
-                  .os + "/" + .architecture + ((.variant)? // "" | "/" + .)]
-                else # 单架构镜像
-                  [[.config.os, .config.architecture] | join("/")]
-                end
-                | if type == "string" then [.] else . end
-                | unique
-                | join(", ")
-              ' 2>/dev/null || echo "未知架构"
-            )
+            archs=$(echo "$manifest" | jq -r '
+              if .manifests then 
+                [.manifests[].platform | 
+                  (.os // "unknown") + "/" + 
+                  (.architecture // "unknown") + 
+                  (if .variant and .variant != "" then "/" + .variant else "" end)
+                ] | unique | join(", ")
+              else 
+                # 从容器配置层提取信息
+                (try (.config.os // "linux") catch "linux") + "/" +
+                (try (.config.architecture // .architecture) catch "unknown")
+              end
+            ' 2>/dev/null || echo "解析失败")
 
             # 判断镜像类型
-            if echo "$manifest" | jq -e '.manifests' > /dev/null; then
+            if echo "$manifest" | jq -e '.manifests' >/dev/null; then
               type="多架构"
             else
               type="单架构"
