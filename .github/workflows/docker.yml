@@ -18,6 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y  skopeo
+          curl -fsSL https://get.docker.com | sh
 
       - name: Validate and process SYNC_MAPPINGS
         id: process-sync-mappings
