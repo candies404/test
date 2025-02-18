@@ -1,11 +1,14 @@
-name: Advanced Image Sync
+name: Multi-arch Image Sync
 
 on:
   workflow_dispatch:
     inputs:
       sync_mappings:
-        description: '镜像同步规则（格式：源镜像=目标镜像，多个用逗号分隔）'
+        description: '镜像同步规则（格式：源镜像=目标镜像，多个用逗号或换行分隔）'
         required: false
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   sync-images:
@@ -22,236 +25,133 @@ jobs:
       - name: Validate and process SYNC_MAPPINGS
         id: process-sync-mappings
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           SYNC_MAPPINGS_INPUT: ${{ inputs.sync_mappings || vars.SYNC_MAPPINGS }}
         run: |
-          # 基础校验
-          if [ -z "$SYNC_MAPPINGS_INPUT" ]; then
-            echo "::error::SYNC_MAPPINGS 未设置，请提供同步规则。"
-            exit 1
-          fi
-
-          # 初始化变量
-          declare -A processed_rules
+          # 输入预处理流程
+          echo "原始输入: $SYNC_MAPPINGS_INPUT"
+          processed_input=$(echo "$SYNC_MAPPINGS_INPUT" | 
+            tr '\n' ',' |      # 换行转逗号
+            tr -s ', ' |       # 压缩重复分隔符
+            sed -E 's/^[, ]+//; s/[, ]+$//' |  # 移除首尾无效字符
+            envsubst           # 替换环境变量
+          )
+          
+          # 规则解析和验证
+          declare -A valid_rules
           declare -A grouped_rules
-          declare -a unique_sources
-          IFS=',' read -ra RAW_RULES <<< "${SYNC_MAPPINGS_INPUT//$'\r'/}"  # 清除所有回车符
-
-          # 增强的规则处理函数
-          process_rule() {
-            local source=$(echo "$1" | tr -d '\r' | xargs | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            local target=$(echo "$2" | tr -d '\r' | xargs | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-            # 自动补全源镜像名称
-            if [[ "$source" != *"/"* && "$source" != *":"* ]]; then
-              source="docker.io/library/$source"
-            elif [[ "$source" == *":"* && "$source" != *"/"* ]]; then
-              source="docker.io/library/${source/:/:}"
-            fi
-
-            # 自动生成目标镜像名称
-            if [[ "$target" == *"+USERNAME"* ]]; then
-              target="${target//+USERNAME/$DOCKERHUB_USERNAME}"
-            fi
-
-            # 严格格式校验
-            if [[ ! "$target" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$ ]]; then
-              echo "::error::无效的目标镜像格式: $target"
-              exit 1
-            fi
-
-            echo "${source}=${target}"
-          }
-
-          # 处理原始规则
-          for raw_rule in "${RAW_RULES[@]}"; do
-            # 清理原始规则
-            rule=$(echo "$raw_rule" | tr -d '\r' | xargs | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            [[ -z "$rule" ]] && continue
-
-            # 拆分源和目标
-            if [[ "$rule" == *"="* ]]; then
-              source_part=$(echo "${rule%%=*}" | xargs)
-              target_part=$(echo "${rule#*=}" | xargs)
-            else
-              source_part=$(echo "$rule" | xargs)
-              target_part="${DOCKERHUB_USERNAME}/$(echo "$rule" | tr '/' '-' | tr -cd '[:alnum:]._-')-mirror"
-            fi
-
-            # 处理镜像名称
-            full_rule=$(process_rule "$source_part" "$target_part") || exit 1
-            IFS='=' read -r source_image dest_image <<< "$full_rule"
-
-            # 有效性校验
-            if [[ -z "$source_image" || -z "$dest_image" ]]; then
-              echo "::warning::忽略无效规则: $rule"
-              continue
-            fi
-
-            # 去重处理
-            key="${source_image}=${dest_image}"
-            if [[ -n "${processed_rules[$key]}" ]]; then
-              continue
-            fi
-            processed_rules["$key"]=1
-
-            # 分组处理
-            if [[ -z "${grouped_rules[$dest_image]}" ]]; then
-              grouped_rules["$dest_image"]="$source_image"
-            else
-              grouped_rules["$dest_image"]+=$'\n'"$source_image"
-            fi
-
-            # 收集源镜像
-            if [[ ! " ${unique_sources[@]} " =~ " ${source_image} " ]]; then
-              unique_sources+=("$source_image")
-            fi
-          done
-
-          # 生成分组JSON（严格模式）
-          grouped_json=$(jq -n '{}')
-          for dest in "${!grouped_rules[@]}"; do
-            # 使用换行符分割源镜像列表
-            sources=()
-            while IFS=$'\n' read -r line; do
-              sources+=("$line")
-            done <<< "${grouped_rules[$dest]}"
-
-            # 生成严格格式的JSON数组
-            sources_json=$(printf '%s\n' "${sources[@]}" | jq -R -s 'map(select(. != "" and . != null)) | unique')
+          declare -a source_images
+          
+          IFS=',' read -ra RULES <<< "$processed_input"
+          for rule in "${RULES[@]}"; do
+            rule=$(echo "${rule}" | xargs | sed 's/\/\//\//g; s/\/$//')  # 标准化路径
             
-            grouped_json=$(jq --arg dest "$dest" --argjson sources "$sources_json" '
-              . + { ($dest): $sources }
-            ' <<< "$grouped_json") || exit 1
-          done
-
-          # 生成唯一源列表（严格模式）
-          unique_sources_json=$(printf '%s\n' "${unique_sources[@]}" | jq -R -s 'map(select(. != "")) | unique')
-
-          # 安全输出到GITHUB_OUTPUT
-          delimiter=$(openssl rand -hex 16)
-          {
-            echo "grouped_rules<<${delimiter}"
-            jq -c . <<< "$grouped_json"
-            echo "${delimiter}"
-            
-            echo "unique_sources<<${delimiter}"
-            jq -c . <<< "$unique_sources_json"
-            echo "${delimiter}"
-            
-            echo "total_rules=${#processed_rules[@]}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Check architectures
-        run: |
-          unique_sources=${{ steps.process-sync-mappings.outputs.unique_sources }}
-          images=$(echo "$unique_sources" | jq -r 'join(" ")')
-          IFS=' ' read -ra IMAGES <<< "$images"
-
-          for image in "${IMAGES[@]}"; do
-            echo "处理镜像: $image"
-            
-            if ! raw_data=$(skopeo inspect --raw "docker://$image" 2>&1); then
-              echo "[错误] 无法获取镜像: $raw_data"
-              echo "----------------------------------------"
-              continue
-            fi
-
-            if echo "$raw_data" | jq -e '.manifests and (.mediaType | contains("manifest.list"))' >/dev/null; then
-              archs=$(echo "$raw_data" | jq -r '
-                [.manifests[] | 
-                .platform as $p |
-                select($p.os != null and $p.architecture != null) |
-                "\($p.os)/\($p.architecture)" +
-                (if $p.variant and $p.variant != "" then "/\($p.variant)" else "" end)
-                ] | unique | join(", ")
-              ')
-              type="多架构"
-            elif echo "$raw_data" | jq -e '.manifests' >/dev/null; then
-              archs=$(echo "$raw_data" | jq -r '
-                [.manifests[] | 
-                .platform as $p |
-                select($p.os != null and $p.architecture != null) |
-                "\($p.os)/\($p.architecture)" +
-                (if $p.variant and $p.variant != "" then "/\($p.variant)" else "" end)
-                ] | unique | join(", ")
-              ')
-              type="多架构"
-            else
-              inspect_info=$(skopeo inspect "docker://$image")
-              os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
-              arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
-              variant=$(echo "$inspect_info" | jq -r '.Variant? // ""')
-              if [[ "$os" != "unknown" && "$arch" != "unknown" ]]; then
-                archs="${os}/${arch}${variant:+/$variant}"
-              else
-                archs="<无效架构>"
+            if [[ "$rule" =~ ^([^=]+)=([^=]+)$ ]]; then
+              src="${BASH_REMATCH[1]}"
+              dst="${BASH_REMATCH[2]}"
+              
+              # 自动补全官方镜像前缀
+              if [[ ! "$src" =~ / ]] && [[ "$src" != *.*:* ]]; then
+                src="docker.io/library/$src"
               fi
-              type="单架构"
+              
+              # 去重检查
+              if [[ -n "${valid_rules["$src=$dst"]}" ]]; then
+                echo "::notice::忽略重复规则: $src => $dst"
+                continue
+              fi
+              
+              valid_rules["$src=$dst"]=1
+              grouped_rules["$dst"]+=" $src"
+              source_images+=("$src")
+              
+              echo " ✅ 有效规则: $src → $dst"
+            else
+              echo "::warning::无效规则格式: $rule"
             fi
+          done
+          
+          # 输出处理结果
+          echo "处理完成 ${#valid_rules[@]} 条有效规则"
+          echo "unique_sources=$(printf '%s\n' "${source_images[@]}" | jq -R -s 'split("\n") | map(select(. != "")) | unique')" >> $GITHUB_OUTPUT
+          echo "total_rules=${#valid_rules[@]}" >> $GITHUB_OUTPUT
+          
+          # 构建分组JSON
+          grouped_json=$(jq -n '{}')
+          for dst in "${!grouped_rules[@]}"; do
+            sources=(${grouped_rules[$dst]})
+            grouped_json=$(jq --arg dst "$dst" --argjson sources "${sources[*]}" '. + { ($dst): $sources }' <<< "$grouped_json")
+          done
+          echo "grouped_rules=$grouped_json" >> $GITHUB_OUTPUT
 
-            [ "$archs" = "" ] && archs="<无有效架构>"
-            printf "镜像名称: %s\n架构类型: %s\n支持架构: %s\n%s\n" \
-              "$image" "$type" "${archs}" "----------------------------------------"
+      - name: Architecture Validation
+        run: |
+          sources=${{ steps.process-sync-mappings.outputs.unique_sources }}
+          echo "📦 需要检查的镜像列表:"
+          echo "$sources" | jq -r '.[]'
+          
+          echo "$sources" | jq -r '.[]' | while read -r image; do
+            echo "🔍 检查镜像架构: $image"
+            manifest=$(skopeo inspect --raw "docker://$image" 2>&1 || true)
+            
+            if ! jq -e . <<< "$manifest" &>/dev/null; then
+              echo "❌ 获取清单失败: $manifest"
+              continue
+            fi
+            
+            if jq -e '.manifests' <<< "$manifest" &>/dev/null; then
+              archs=$(jq -r '[.manifests[].platform | "\(.os)/\(.architecture)\(.variant?//"")"] | unique | join(", ")' <<< "$manifest")
+              echo "🔄 多架构镜像支持: $archs"
+            else
+              os=$(jq -r '.Os // "unknown"' <<< "$manifest")
+              arch=$(jq -r '.Architecture // "unknown"' <<< "$manifest")
+              echo "⚡ 单架构镜像: ${os}/${arch}"
+            fi
           done
 
-      - name: Login to DockerHub
+      - name: Docker Hub Login
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Sync images
-        id: sync-images
+      - name: Execute Image Sync
+        id: image-sync
         run: |
-          # 增加调试信息输出
-          echo "处理后的同步规则:"
-          echo "${{ steps.process-sync-mappings.outputs.grouped_rules }}" | jq .
-          
-          # 使用严格的JSON解析
-          grouped_rules=$(echo '${{ steps.process-sync-mappings.outputs.grouped_rules }}' | jq -c .)
-          total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
-          SYNC_EXECUTED=0
+          grouped_rules='${{ steps.process-sync-mappings.outputs.grouped_rules }}'
+          total_success=0
+          total_failed=0
           failed_rules=()
-
-          # 使用jq严格解析
-          echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"' | while IFS='=' read -r dest sources; do
-            echo "🔄 正在同步: $sources → $dest"
-            
-            # 增加超时和重试机制
-            if timeout 300 docker buildx imagetools create -t "$dest" $sources; then
-              ((SYNC_EXECUTED++))
-              echo "✅ 同步成功: $sources → $dest"
+          
+          echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value[])"' | while IFS="=" read -r dst src; do
+            echo "🚀 同步操作: $src → $dst"
+            if docker buildx imagetools create -t "$dst" "$src"; then
+              ((total_success++))
+              echo "✅ 同步成功: $src → $dst"
             else
-              error_msg="同步失败: $sources → $dest"
-              echo "::error::$error_msg"
+              ((total_failed++))
+              error_msg="$src → $dst"
               failed_rules+=("$error_msg")
+              echo "::error::同步失败: $error_msg"
             fi
-            echo "----------------------------------------"
+            echo "------------------------------"
           done
+          
+          # 写入输出变量
+          echo "total_success=$total_success" >> $GITHUB_OUTPUT
+          echo "total_failed=$total_failed" >> $GITHUB_OUTPUT
+          echo "failed_rules=$(printf '%s\n' "${failed_rules[@]}" | jq -R -s 'map(select(. != ""))')" >> $GITHUB_OUTPUT
 
-          # 严格处理失败规则输出
-          failed_rules_json=$(jq -nc '$ARGS.positional' --args "${failed_rules[@]}")
-          {
-            echo "SYNC_EXECUTED=$SYNC_EXECUTED"
-            echo "failed_rules<<EOF"
-            echo "$failed_rules_json"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Generate report
+      - name: Generate Report
         run: |
-          total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
-          SYNC_EXECUTED=${{ steps.sync-images.outputs.SYNC_EXECUTED }}
-          failed_rules=${{ steps.sync-images.outputs.failed_rules }}
-
-          echo "📊=== 同步报告 ==="
-          echo "🔢 处理总数 | $total_rules"
-          echo "🟢 成功同步 | $SYNC_EXECUTED"
-          echo "🔴 同步失败 | $(echo "$failed_rules" | jq 'length')"
-
-          if [ $(echo "$failed_rules" | jq 'length') -gt 0 ]; then
-            echo "🔥 失败详情："
-            echo "$failed_rules" | jq -r '.[] | "  ‼️ \(.)"'
+          echo "📈 ===== 同步报告 ====="
+          echo "总处理规则: ${{ steps.process-sync-mappings.outputs.total_rules }}"
+          echo "成功数量: ${{ steps.image-sync.outputs.total_success }}"
+          echo "失败数量: ${{ steps.image-sync.outputs.total_failed }}"
+          
+          if [[ ${{ steps.image-sync.outputs.total_failed }} -gt 0 ]]; then
+            echo "❌ 失败详情:"
+            echo "${{ steps.image-sync.outputs.failed_rules }}" | jq -r '.[]'
             exit 1
+          else
+            echo "🎉 所有镜像同步成功！"
           fi
