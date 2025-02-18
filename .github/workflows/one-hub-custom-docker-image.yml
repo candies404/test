@@ -1,4 +1,4 @@
-name: Check Image Architectures (skopeo enhanced)
+name: Check Image Architectures (Fixed)
 
 on:
   workflow_dispatch:
@@ -19,17 +19,30 @@ jobs:
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
             
-            # 获取原始manifest并提取关键信息
+            # 获取原始manifest并提取关键信息（带调试日志）
             if ! raw_data=$(skopeo inspect --raw docker://$image 2>&1); then
               echo "[错误] 无法获取镜像: $raw_data"
               echo "----------------------------------------"
               continue
             fi
 
-            # 识别清单类型 (增强的混合检测)
-            if <<< "$raw_data" jq -e '.manifests' &>/dev/null; then
-              # 确认是多架构镜像
-              archs=$(<<< "$raw_data" jq -r '
+            # 获取完整manifest内容（调试用）
+            echo "原始清单内容："
+            echo "$raw_data" | jq .
+
+            # 增强的多架构检测逻辑
+            if echo "$raw_data" | jq -e '.manifests and (.mediaType | contains("manifest.list"))' >/dev/null; then
+              archs=$(echo "$raw_data" | jq -r '
+                [.manifests[] | 
+                .platform as $p |
+                "\($p.os)/\($p.architecture)" +
+                (if $p.variant and $p.variant != "" then "/\($p.variant)" else "" end)
+                ] | unique | join(", ")
+              ')
+              type="多架构"
+            elif echo "$raw_data" | jq -e '.manifests' >/dev/null; then
+              # 处理非标准的多架构格式
+              archs=$(echo "$raw_data" | jq -r '
                 [.manifests[] | 
                 .platform as $p |
                 "\($p.os)/\($p.architecture)" +
@@ -38,11 +51,10 @@ jobs:
               ')
               type="多架构"
             else
-              # 解析单架构信息
               inspect_info=$(skopeo inspect docker://$image)
-              os=$(<<< "$inspect_info" jq -r '.Os // "unknown"')
-              arch=$(<<< "$inspect_info" jq -r '.Architecture // "unknown"')
-              variant=$(<<< "$inspect_info" jq -r '.Variant? // ""')
+              os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
+              arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
+              variant=$(echo "$inspect_info" | jq -r '.Variant? // ""')
               archs="${os}/${arch}${variant:+/$variant}"
               type="单架构"
             fi
