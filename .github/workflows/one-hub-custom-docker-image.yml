@@ -27,8 +27,8 @@ jobs:
             fi
 
             # 获取完整manifest内容（调试用）
-            echo "原始清单内容："
-            echo "$raw_data" | jq .
+            # echo "原始清单内容："
+            # echo "$raw_data" | jq .
 
             # 增强的多架构检测逻辑
             if echo "$raw_data" | jq -e '.manifests and (.mediaType | contains("manifest.list"))' >/dev/null; then
