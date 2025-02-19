@@ -11,14 +11,17 @@ jobs:
   sync-images:
     runs-on: ubuntu-latest
     steps:
+      # 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 安装依赖
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y skopeo
 
+      # 验证和处理同步映射
       - name: Validate and process SYNC_MAPPINGS
         id: process-sync-mappings
         env:
@@ -26,7 +29,7 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           # 定义镜像名称正则表达式
-          IMAGE_REGEX='^([a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$'
+          IMAGE_REGEX='^([a-z0-9]+([._-][a-z0-9]+)*)(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$'
 
           function validate_image() {
             local image=$1
@@ -38,13 +41,18 @@ jobs:
             # 自动补全逻辑
             if [[ "$type" == "source" && "$clean_image" != */* ]]; then
               clean_image="docker.io/library/${clean_image}"
-            elif [[ "$type" == "dest" && "$clean_image" != */* ]]; then
-              clean_image="${DOCKERHUB_USERNAME}/${clean_image}"
+            elif [[ "$type" == "dest" ]]; then
+              if [[ -z "$DOCKERHUB_USERNAME" ]]; then
+                echo "::error::DOCKERHUB_USERNAME未设置，无法补全目标镜像名称"
+                return 1
+              elif [[ "$clean_image" != */* ]]; then
+                clean_image="${DOCKERHUB_USERNAME}/${clean_image}"
+              fi
             fi
 
             # 格式验证
             if [[ ! "$clean_image" =~ $IMAGE_REGEX ]]; then
-              echo "::error::无效的${type}镜像格式: $image → $clean_image"
+              echo "::error::错误的${type}镜像格式: $image → $clean_image"
               return 1
             fi
             
@@ -113,6 +121,7 @@ jobs:
           echo "unique_sources=$(jq -c -n '$unique_sources' --args ${unique_sources[@]})" >> $GITHUB_OUTPUT
           echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
+      # 检查架构信息
       - name: Check architectures
         run: |
           unique_sources=${{ steps.process-sync-mappings.outputs.unique_sources }}
@@ -163,12 +172,14 @@ jobs:
               "$image" "$type" "${archs}" "----------------------------------------"
           done
 
+      # 登录 DockerHub
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 同步镜像
       - name: Sync images
         id: sync-images
         run: |
@@ -177,7 +188,6 @@ jobs:
           SYNC_EXECUTED=0
           failed_rules=()
           
-          # 使用进程替换避免子shell问题
           while IFS== read -r dest sources; do
             echo "🔄 正在同步: $sources → $dest"
             if docker buildx imagetools create -t "$dest" $sources; then
@@ -191,7 +201,7 @@ jobs:
             echo "----------------------------------------"
           done < <(echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"')
 
-          # 显式设置退出状态
+          # 设置退出状态
           if [ ${#failed_rules[@]} -gt 0 ]; then
             echo "::error::存在失败的同步任务"
             exit 1
@@ -201,6 +211,7 @@ jobs:
           echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
           echo "failed_rules=$failed_rules_json" >> $GITHUB_OUTPUT
 
+      # 生成报告
       - name: Generate report
         run: |
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
