@@ -11,7 +11,7 @@ jobs:
   sync-images:
     runs-on: ubuntu-latest
     steps:
-      # 检出代码
+    # 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -118,7 +118,7 @@ jobs:
             grouped_json=$(echo "$grouped_json" | jq --arg dest "$dest" --arg sources "${sources[*]}" '. + { ($dest): ($sources | split(" ")) }')
           done
           echo "grouped_rules=$(echo $grouped_json | jq -c)" >> $GITHUB_OUTPUT
-          echo "unique_sources=$(jq -c -n '$unique_sources' --args ${unique_sources[@]})" >> $GITHUB_OUTPUT
+          echo "unique_sources=$(jq -c -n '$ARGS.positional' --args "${unique_sources[@]}")" >> $GITHUB_OUTPUT
           echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
       # 检查架构信息
@@ -186,8 +186,8 @@ jobs:
           grouped_rules='${{ steps.process-sync-mappings.outputs.grouped_rules }}'
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
           SYNC_EXECUTED=0
-          failed_rules=()
-          
+          declare -a failed_rules=()
+
           while IFS== read -r dest sources; do
             echo "🔄 正在同步: $sources → $dest"
             if docker buildx imagetools create -t "$dest" $sources; then
@@ -201,28 +201,33 @@ jobs:
             echo "----------------------------------------"
           done < <(echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"')
 
-          # 设置退出状态
+          # 生成输出
+          failed_rules_json=$(jq -c -n '$ARGS.positional' --args "${failed_rules[@]}")
+          echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
+          echo "failed_rules=$failed_rules_json" >> $GITHUB_OUTPUT
+
           if [ ${#failed_rules[@]} -gt 0 ]; then
             echo "::error::存在失败的同步任务"
             exit 1
           fi
 
-          failed_rules_json=$(jq -c -n '$ARGS.positional' --args "${failed_rules[@]}")
-          echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
-          echo "failed_rules=$failed_rules_json" >> $GITHUB_OUTPUT
-
-      # 生成报告
+      # 汇报结果
       - name: Generate report
         run: |
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
           SYNC_EXECUTED=${{ steps.sync-images.outputs.SYNC_EXECUTED }}
           failed_rules=${{ steps.sync-images.outputs.failed_rules }}
+          
           echo "📊=== 同步报告 ==="
           echo "🔢 处理总数 | $total_rules"
           echo "🟢 成功同步 | $SYNC_EXECUTED"
-          echo "🔴 同步失败 | $(echo "$failed_rules" | jq 'length')"
-          if [ $(echo "$failed_rules" | jq 'length') -gt 0 ]; then
+          
+          failed_count=$(echo "$failed_rules" | jq -r 'length')
+          if [ "$failed_count" -gt 0 ]; then
+            echo "🔴 同步失败 | $failed_count"
             echo "🔥 失败详情："
             echo "$failed_rules" | jq -r '.[] | "  ‼️ \(.)"'
             exit 1
+          else
+            echo "✅ 所有镜像同步成功"
           fi
