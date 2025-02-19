@@ -82,32 +82,40 @@ jobs:
             raw_manifest=$(skopeo inspect --raw "docker://${full_source}" | tee /tmp/manifest.txt)
             is_multiarch=false
 
-            # 新的双重判定逻辑（兼容OCIManifest和manifest.list）
+            # 修改后的双重判定逻辑（添加有效平台过滤）
             if echo "$raw_manifest" | jq -e '
-              (.manifests != null) and
-              (
+            (.manifests != null) and
+            (
                 (.mediaType | contains("manifest.list")) or 
                 (.mediaType | contains("vnd.docker.distribution.manifest.list")) or
                 (.manifests | length > 0)
-              )
+            )
             ' >/dev/null; then
-              is_multiarch=true
-              arch_list=$(echo "$raw_manifest" | jq -r '
+            is_multiarch=true
+            arch_list=$(echo "$raw_manifest" | jq -r '
                 [.manifests[] | 
-                  .platform as $p |
-                  select($p.os and $p.architecture) |
-                  "\($p.os)/\($p.architecture)\($p.variant // "" | if . != "" then "/"+. else "" end)"
+                .platform as $p |
+                # 添加有效平台过滤条件
+                select($p.os != null and $p.architecture != null and $p.os != "unknown" and $p.architecture != "unknown") |
+                "\($p.os)/\($p.architecture)\($p.variant // "" | if . != "" then "/"+. else "" end)"
                 ] | unique | join(", ")
-              ')
-              echo "⚙️ 检测到多架构镜像 → 支持架构: [${arch_list}]"
+            ')
+            echo "⚙️ 检测到多架构镜像 → 支持架构: [${arch_list}]"
             else
-              # 单架构镜像路径
-              inspect_info=$(skopeo inspect "docker://${full_source}")
-              os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
-              arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
-              variant=$(echo "$inspect_info" | jq -r '.Variant? // ""')
-              echo "⚙️ 单架构镜像 → ${os}/${arch}${variant:+/${variant}}"
+            # 改进的单架构镜像路径（补充有效性检查）
+            inspect_info=$(skopeo inspect "docker://${full_source}")
+            os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
+            arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
+            variant=$(echo "$inspect_info" | jq -r '.Variant? // ""')
+            
+            if [[ "$os" != "unknown" && "$arch" != "unknown" ]]; then
+                echo "⚙️ 单架构镜像 → ${os}/${arch}${variant:+/${variant}}"
+            else
+                echo "::warning::检测到无效架构 → OS: ${os}, Architecture: ${arch}"
+                arch_list="<invalid-platform>"
             fi
+            fi
+
 
             # ============== 镜像同步 ==============
             if [[ "$is_multiarch" == "true" ]]; then
