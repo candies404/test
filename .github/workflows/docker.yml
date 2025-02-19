@@ -125,7 +125,7 @@ jobs:
       - name: Check architectures
         run: |
           unique_sources=${{ steps.process-sync-mappings.outputs.unique_sources }}
-          images=$(echo "$unique_sources" | jq -r 'join(" ")')
+          images=$(echo "$unique_sources" | jq -r 'fromjson | join(" ")')
           IFS=' ' read -ra IMAGES <<< "$images"
           for image in "${IMAGES[@]}"; do
             echo "处理镜像: $image"
