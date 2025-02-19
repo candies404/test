@@ -6,8 +6,7 @@ on:
 jobs:
   check-and-sync:
     runs-on: ubuntu-latest
-    env:
-      DEST_REPO: chipsman  # 默认值，实际从secrets读取
+    
     steps:
       - name: Install dependencies
         run: |
@@ -60,7 +59,7 @@ jobs:
             # 执行同步
             if [ "$is_multiarch" = "true" ]; then
               echo "发现多架构镜像，使用buildx同步..."
-              docker buildx imagetools create -t "$target_image" "$full_source_image"  # 重点修改处
+              docker buildx imagetools create -t "$target_image" "$full_source_image"
             else
               echo "单架构镜像，直接复制..."
               docker pull "$full_source_image"
@@ -71,4 +70,3 @@ jobs:
             echo "成功同步镜像: $full_source_image => $target_image"
             echo "======================================="
           done
-v
