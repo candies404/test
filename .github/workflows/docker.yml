@@ -65,9 +65,9 @@ jobs:
             fi
             # 修复library/前缀逻辑（仅适用于官方镜像）
             if [[ "$source_name" == *"/"* ]]; then
-            full_source="dockerpull.cn/${source_name}:${source_tag}"
+            full_source="docker.io/${source_name}:${source_tag}"
             else
-            full_source="dockerpull.cn/library/${source_name}:${source_tag}"
+            full_source="docker.io/library/${source_name}:${source_tag}"
             fi
 
             # ======= 目标处理 =======
