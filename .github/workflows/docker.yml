@@ -112,7 +112,7 @@ jobs:
             # ============== 镜像同步 ==============
             if [[ "$is_multiarch" == "true" ]]; then
               echo "🚢 多架构镜像同步 → 使用buildx"
-              docker buildx imagetools create --force-rm -t "$full_target" "$full_source" || {
+                docker buildx imagetools create -t "$full_target" "$full_source" || {
                 echo "::error::buildx同步失败"
                 exit 1
               }
