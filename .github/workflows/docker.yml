@@ -6,24 +6,23 @@ on:
 jobs:
   check-and-sync:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y skopeo
 
-      - name: Docker login
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-          # 设置环境变量供后续步骤使用
-          echo "DEST_REPO=$DOCKERHUB_USERNAME" >> $GITHUB_ENV
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Process images
         run: |
+          set -e  # 任何命令失败立即退出
+          DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"  # 直接从secrets读取用户名
+
           declare -A SYNC_MAP=(
             ["nginx"]="nginx-m"
             ["redis:7.0"]="redis:7"
@@ -34,39 +33,43 @@ jobs:
           IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
 
           for source_image in "${IMAGES[@]}"; do
-            echo "====== 处理镜像: $source_image ======"
-            
-            # 获取目标镜像名称（自动添加用户名前缀）
-            target_path="${SYNC_MAP[$source_image]}"
-            if [[ "$source_image" == *":"* ]]; then
-              source_tag="${source_image#*:}"
-              target_image="$DEST_REPO/${target_path%%:*}:${target_path#*:}"  # 处理带tag的情况
-            else
-              target_image="$DEST_REPO/${target_path}:latest"  # 无tag时使用latest
-            fi
+            echo "====== Processing: $source_image ======"
 
-            # 构造完整源镜像路径
+            # 构造完整源镜像地址
             if [[ "$source_image" != *"/"* ]]; then
-              full_source_image="docker.io/library/$source_image"
+              full_source="docker.io/library/$source_image"
             else
-              full_source_image="docker.io/$source_image"
+              full_source="docker.io/${source_image}"  # 补全registry
             fi
 
-            # 检查是否是多架构镜像
-            raw_data=$(skopeo inspect --raw "docker://$full_source_image")
-            is_multiarch=$(echo "$raw_data" | jq -e '.manifests != null')
+            # 获取目标镜像名称
+            target_ref="${SYNC_MAP[$source_image]}"
+            if [[ "$target_ref" == *":"* ]]; then
+              target_name="${target_ref%:*}"
+              target_tag="${target_ref#*:}"
+            else
+              target_name="$target_ref"
+              target_tag="latest"
+            fi
+            full_target="docker.io/${DEST_REPO}/${target_name}:${target_tag}"
+
+            echo "[Debug] Source: $full_source → Target: $full_target"
+
+            # 检查镜像架构
+            raw_manifest=$(skopeo inspect --raw "docker://${full_source}")
+            is_multiarch=$(echo "$raw_manifest" | jq -e 'has("manifests")')
 
             # 执行同步
-            if [ "$is_multiarch" = "true" ]; then
+            if [[ "$is_multiarch" == "true" ]]; then
               echo "发现多架构镜像，使用buildx同步..."
-              docker buildx imagetools create -t "$target_image" "$full_source_image"
+              docker buildx imagetools create -t "$full_target" "$full_source"
             else
               echo "单架构镜像，直接复制..."
-              docker pull "$full_source_image"
-              docker tag "$full_source_image" "$target_image"
-              docker push "$target_image"
+              docker pull "$full_source"
+              docker tag "$full_source" "$full_target"
+              docker push "$full_target"
             fi
 
-            echo "成功同步镜像: $full_source_image => $target_image"
+            echo "成功同步镜像: ${full_source} → ${full_target}"
             echo "======================================="
           done
