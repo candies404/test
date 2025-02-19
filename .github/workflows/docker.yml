@@ -1,4 +1,4 @@
-name: Image Sync with Enhanced Logging
+name: Image Sync with Architecture Validation
 
 on:
   workflow_dispatch:
@@ -7,37 +7,55 @@ jobs:
   image-sync:
     runs-on: ubuntu-latest
     env:
+      DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       DEST_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
 
     steps:
       - name: Setup build environment
         uses: docker/setup-buildx-action@v3
         with:
           install: true
+          driver-opts: network=host
 
-      - name: Install required tools
+      - name: Install system dependencies
         run: |
-          echo "🛠️ Installing system dependencies..."
-          sudo apt-get update && sudo apt-get install -y skopeo
+          echo "🛠️ Installing required tools..."
+          sudo apt-get update && sudo apt-get install -y skopeo jq
+          echo "✅ Dependencies installed"
 
-      - name: Configure registry authentication
+      - name: Configure Docker authentication
+        run: |
+          mkdir -p $HOME/.docker
+          auth_token=$(echo -n "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" | base64 -w 0)
+          cat > $HOME/.docker/config.json <<EOF
+          {
+            "auths": {
+              "https://index.docker.io/v1/": {
+                "auth": "${auth_token}"
+              }
+            }
+          }
+          EOF
+          echo "🔐 Docker authentication configured"
+
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
         env:
           DOCKER_REGISTRY: index.docker.io
 
-      - name: Perform image synchronization
+      - name: Execute image synchronization
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
 
-          # 配置同步规则
+          # 同步配置
           declare -A SYNC_MAP=(
             ['nginx']='nginx-m'
-            ['redis:7.0']='redis:7'
+            ['redis:7.0']='redis:7' 
             ['chipsman/uptime-kuma']='uptime-kuma-back'
           )
 
@@ -49,22 +67,23 @@ jobs:
           readonly COLOR_WARN="\033[1;33m"
           readonly COLOR_ERR="\033[1;31m"
 
-          # 功能函数：带时间戳的日志
+          # 带时间戳的日志函数
           log() {
             local level=$1
             local message=$2
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             case $level in
-              "INFO") echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" ;;
-              "WARN") echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2 ;;
+              "INFO")  echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" ;;
+              "WARN")  echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2 ;;
               "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2 ;;
             esac
           }
 
-          # 镜像地址规范化
+          # 镜像路径规范化（关键修改点）
           normalize_image() {
             local image_ref=$1
             local default_tag=$2
+            local context=$3  # source | target
 
             # 分离名称和标签
             if [[ "$image_ref" == *":"* ]]; then
@@ -75,12 +94,25 @@ jobs:
               local image_tag="$default_tag"
             fi
 
-            # 添加仓库前缀
-            if [[ "$image_name" == *"/"* ]]; then
-              printf "docker.io/%s:%s" "$image_name" "$image_tag"
-            else
-              printf "docker.io/library/%s:%s" "$image_name" "$image_tag"
-            fi
+            # 处理不同场景
+            case $context in
+              "source")
+                # 源镜像保留library/前缀
+                if [[ "$image_name" == *"/"* ]]; then
+                  printf "docker.io/%s:%s" "$image_name" "$image_tag"
+                else
+                  printf "docker.io/library/%s:%s" "$image_name" "$image_tag"
+                fi
+                ;;
+              "target")
+                # 目标镜像强制使用用户仓库
+                printf "docker.io/%s/%s:%s" "$DEST_REPO" "$image_name" "$image_tag"
+                ;;
+              *)
+                log "ERROR" "无效的上下文参数: $context"
+                exit 1
+                ;;
+            esac
           }
 
           # 架构信息获取
@@ -89,20 +121,18 @@ jobs:
             log "INFO" "获取架构信息：${COLOR_SRC}${image}${COLOR_RESET}"
             
             local manifest
-            if ! manifest=$(skopeo inspect --raw --creds "$DOCKERHUB_CREDS" "docker://${image}" 2>&1); then
+            if ! manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>&1); then
               log "ERROR" "无法获取镜像清单：${manifest}"
               return 1
             fi
 
             if jq -e '.manifests != null' <<< "$manifest" &>/dev/null; then
-              # 多架构镜像处理
               local arch_list=$(jq -r '[.manifests[].platform | 
                 "\(.os)/\(.architecture)\(if .variant then "/"+.variant else "" end)"
               ] | unique | join(", ")' <<< "$manifest")
               log "INFO" "检测到多架构镜像：${arch_list}"
               echo "$arch_list"
             else
-              # 单架构镜像处理
               local os=$(jq -r '.Os // "unknown"' <<< "$manifest")
               local arch=$(jq -r '.Architecture // "unknown"' <<< "$manifest")
               local variant=$(jq -r '.Variant? // ""' <<< "$manifest")
@@ -120,15 +150,16 @@ jobs:
 
             log "INFO" "启动同步：${COLOR_SRC}${src}${COLOR_RESET} → ${COLOR_DST}${dst}${COLOR_RESET}"
             
-            if skopeo inspect --raw --creds "$DOCKERHUB_CREDS" "docker://${src}" | jq -e '.manifests != null' &>/dev/null; then
+            if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src}" | jq -e '.manifests != null' &>/dev/null; then
               log "INFO" "使用多架构同步模式"
-              if ! docker buildx imagetools create -t "$dst" "$src"; then
+              if ! docker buildx imagetools create -t "$dst" "$src" \
+                --registry-config $HOME/.docker/config.json; then
                 log "ERROR" "多架构同步失败"
                 return 1
               fi
             else
               log "INFO" "使用单架构同步模式"
-              if ! docker pull -q "$src"; then
+              if ! docker pull --quiet "$src"; then
                 log "ERROR" "镜像拉取失败"
                 return 1
               fi
@@ -136,7 +167,7 @@ jobs:
                 log "ERROR" "镜像标签设置失败"
                 return 1
               fi
-              if ! docker push -q "$dst"; then
+              if ! docker push --quiet "$dst"; then
                 log "ERROR" "镜像推送失败"
                 return 1
               fi
@@ -147,32 +178,33 @@ jobs:
           # 主执行流程
           for source_ref in "${!SYNC_MAP[@]}"; do
             echo "::group::🔄 Processing ${source_ref}"
-            
+
             # 规范化镜像地址
-            log "INFO" "处理原始引用：${source_ref}"
-            src_image=$(normalize_image "$source_ref" "latest")
+            src_image=$(normalize_image "$source_ref" "latest" "source")
             dst_ref="${SYNC_MAP[$source_ref]}"
-            dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")")
-            dst_image="docker.io/${DEST_REPO}/${dst_image#docker.io/}"
+            dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
+
+            log "INFO" "源镜像地址: ${COLOR_SRC}${src_image}${COLOR_RESET}"
+            log "INFO" "目标镜像地址: ${COLOR_DST}${dst_image}${COLOR_RESET}"
 
             # 验证源镜像
             log "INFO" "验证源镜像可访问性"
-            if ! skopeo inspect --creds "$DOCKERHUB_CREDS" "docker://${src_image}" >/dev/null; then
+            if ! skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src_image}" >/dev/null; then
               log "ERROR" "源镜像不可访问：${src_image}"
               exit 1
             fi
 
             # 检查同步必要性
             log "INFO" "计算镜像摘要"
-            src_digest=$(skopeo inspect --creds "$DOCKERHUB_CREDS" --format '{{.Digest}}' "docker://${src_image}")
-            if target_info=$(skopeo inspect --creds "$DOCKERHUB_CREDS" "docker://${dst_image}" 2>/dev/null); then
+            src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://${src_image}")
+            if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${dst_image}" 2>/dev/null); then
               dst_digest=$(jq -r '.Digest' <<< "$target_info")
               if [[ "$src_digest" == "$dst_digest" ]]; then
                 log "INFO" "目标镜像已是最新版本，跳过同步"
                 echo "::endgroup::"
                 continue
               fi
-              log "INFO" "发现差异：源摘要 ${src_digest:0:12} vs 目标摘要 ${dst_digest:0:12}"
+              log "INFO" "发现差异：源摘要 ${src_digest:0:12}... vs 目标摘要 ${dst_digest:0:12}..."
             else
               log "WARN" "目标镜像不存在，将创建新镜像"
             fi
@@ -188,14 +220,15 @@ jobs:
 
             # 输出架构对比
             echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
-            printf "%25s → %-25s\n" "源架构" "目标架构"
-            printf "%25s │ %-25s\n\n" "$src_arch" "$dst_arch"
+            printf "%-40s → %-40s\n" "源架构" "目标架构"
+            printf "%-40s │ %-40s\n" "$src_arch" "$dst_arch"
+            echo
 
             # 执行同步
             if sync_image "$src_image" "$dst_image"; then
-              log "INFO" "同步成功完成"
+              log "INFO" "✅ 同步成功完成"
             else
-              log "ERROR" "同步过程中发生错误"
+              log "ERROR" "❌ 同步过程中发生错误"
               exit 1
             fi
 
