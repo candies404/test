@@ -1,5 +1,6 @@
 name: Multi-arch Image Sync
 
+# 触发条件
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +32,7 @@ jobs:
           # 定义镜像名称正则表达式
           IMAGE_REGEX='^([a-z0-9]+([._-][a-z0-9]+)*)(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$'
 
+          # 验证镜像名称格式
           function validate_image() {
             local image=$1
             local type=$2
@@ -38,7 +40,7 @@ jobs:
             # 清理控制字符和首尾空格
             clean_image=$(echo "$image" | tr -d '\r\n' | xargs)
             
-            # 自动补全逻辑
+            # 自动补全镜像名称
             if [[ "$type" == "source" && "$clean_image" != */* ]]; then
               clean_image="docker.io/library/${clean_image}"
             elif [[ "$type" == "dest" ]]; then
@@ -65,10 +67,12 @@ jobs:
             exit 1
           fi
 
+          # 初始化数据结构
           declare -A processed_rules
           declare -A grouped_rules
           declare -a unique_sources
           
+          # 处理同步规则
           IFS=',' read -ra RULES <<< "$SYNC_MAPPINGS_INPUT"
           for rule in "${RULES[@]}"; do
             rule=$(echo "$rule" | xargs)
@@ -79,7 +83,7 @@ jobs:
               continue
             fi
 
-            # 拆分原始输入
+            # 拆分源镜像和目标镜像
             raw_source="${rule%%=*}"
             raw_dest="${rule#*=}"
 
@@ -105,7 +109,7 @@ jobs:
               grouped_rules["$dest_image"]+=" $source_image"
             fi
 
-            # 记录唯一源
+            # 记录唯一源镜像
             if [[ ! " ${unique_sources[@]} " =~ " ${source_image} " ]]; then
               unique_sources+=("$source_image")
             fi
@@ -119,7 +123,7 @@ jobs:
           done
           echo "grouped_rules=$(echo $grouped_json | jq -c)" >> $GITHUB_OUTPUT
 
-          # 处理unique_sources输出
+          # 生成唯一源镜像输出
           if [ ${#unique_sources[@]} -eq 0 ]; then
               echo "unique_sources=[]" >> $GITHUB_OUTPUT
           else
@@ -129,7 +133,7 @@ jobs:
 
         echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
-      # 检查架构信息
+      # 检查镜像架构信息
       - name: Check architectures
         run: |
           unique_sources=${{ steps.process-sync-mappings.outputs.unique_sources }}
@@ -143,6 +147,8 @@ jobs:
               echo "----------------------------------------"
               continue
             fi
+
+            # 处理多架构镜像
             if echo "$raw_data" | jq -e '.manifests and (.mediaType | contains("manifest.list"))' >/dev/null; then
               archs=$(echo "$raw_data" | jq -r '
                 [.manifests[] | 
@@ -164,6 +170,7 @@ jobs:
               ')
               type="多架构"
             else
+              # 处理单架构镜像
               inspect_info=$(skopeo inspect "docker://$image")
               os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
               arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
@@ -175,6 +182,7 @@ jobs:
               fi
               type="单架构"
             fi
+
             [ "$archs" = "" ] && archs="<无有效架构>"
             printf "镜像名称: %s\n架构类型: %s\n支持架构: %s\n%s\n" \
               "$image" "$type" "${archs}" "----------------------------------------"
@@ -187,7 +195,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 同步镜像
+      # 执行镜像同步
       - name: Sync images
         id: sync-images
         run: |
@@ -196,6 +204,7 @@ jobs:
           SYNC_EXECUTED=0
           declare -a failed_rules=()
 
+          # 执行同步操作
           while IFS== read -r dest sources; do
             echo "🔄 正在同步: $sources → $dest"
             if docker buildx imagetools create -t "$dest" $sources; then
@@ -209,11 +218,12 @@ jobs:
             echo "----------------------------------------"
           done < <(echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"')
 
-          # 生成输出
+          # 生成同步结果
           failed_rules_json=$(jq -c -n '$ARGS.positional' --args "${failed_rules[@]}")
           echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
           echo "failed_rules=$failed_rules_json" >> $GITHUB_OUTPUT
 
+          # 检查是否存在失败的同步任务
           if [ ${#failed_rules[@]} -gt 0 ]; then
             echo "::error::存在失败的同步任务"
             exit 1
