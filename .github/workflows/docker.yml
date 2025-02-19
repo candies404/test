@@ -13,7 +13,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo
+          sudo apt-get install -y skopeo jq  # 必须保留jq
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
@@ -27,20 +27,21 @@ jobs:
           DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"
           SYNC_ENTRIES="nginx=nginx-m,redis:7.0=redis:7,chipsman/uptime-kuma=uptime-kuma-back,chipsman/one-hub=one-hub"
 
-          # 配置解析
+          # ============== 配置解析 ==============
           declare -A SYNC_MAP
           IFS=',' read -ra entries <<< "$SYNC_ENTRIES"
           for entry in "${entries[@]}"; do
             IFS='=' read -r key value <<< "$entry"
-            [[ -z "$key" || -z "$value" ]] && { echo "::error::Invalid entry: $entry"; exit 1; }
+            [[ -z "$key" || -z "$value" ]] && { echo "::error::无效条目: $entry"; exit 1; }
             SYNC_MAP["$key"]="$value"
           done
           IMAGES=("${!SYNC_MAP[@]}")
 
+          # ============== 主处理循环 ==============
           for source_image in "${IMAGES[@]}"; do
-            echo "::group::🔍 Processing $source_image"
+            echo "::group::🔍 处理 $source_image"
             
-            # 源路径构造
+            # ======= 路径构造 =======
             if [[ "$source_image" == *":"* ]]; then
               source_name="${source_image%:*}"
               source_tag="${source_image#*:}"
@@ -50,9 +51,9 @@ jobs:
             fi
             full_source="docker.io/$([[ "$source_name" != *"/"* ]] && echo "library/")${source_name}:$source_tag"
 
-            # 目标路径构造
+            # ======= 目标处理 =======
             target_ref="${SYNC_MAP[$source_image]}"
-            [[ -z "$target_ref" ]] && { echo "::error::Missing target mapping"; exit 1; }
+            [[ -z "$target_ref" ]] && { echo "::error::目标未定义"; exit 1; }
             
             if [[ "$target_ref" == *":"* ]]; then
               target_name="${target_ref%:*}"
@@ -62,99 +63,115 @@ jobs:
               target_tag="$source_tag"  # 继承源标签
             fi
             full_target="docker.io/${DEST_REPO}/${target_name}:${target_tag}"
-            
-            # 数据校验
-            echo "[验证] 源: $full_source"
-            echo "     目标: $full_target"
+
+            # ====== 源镜像验证 ======
+            echo "🔎 验证: ${full_source} → ${full_target}"
             if ! skopeo inspect "docker://${full_source}" >/dev/null 2>&1; then
               echo "::error::源镜像不可访问"; exit 1
             fi
 
-            # 版本比对
+            # ====== 版本对比 ======
             need_sync=true
+            target_exists=false
             if skopeo inspect "docker://${full_target}" &>/dev/null; then
+              target_exists=true
               source_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${full_source}")
               target_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${full_target}")
+              
               if [[ "$source_digest" == "$target_digest" ]]; then
-                echo "🟢 当前版本已是最新 (Digest: ${source_digest})"
+                echo "🟢 当前已是最新版本"
                 need_sync=false
               else
-                echo "🟡 检测到更新: ${source_digest:0:12}.. → ${target_digest:0:12}.."
+                echo "🟡 发现更新: ${source_digest:0:12}... → ${target_digest:0:12}..."
               fi
             else
-              echo "🟡 目标镜像不存在，需要新建"
+              echo "🟡 目标镜像不存在，需要创建"
             fi
 
+            # ====== 跳过检查 ======
             if [[ "$need_sync" == "false" ]]; then
-              echo "✅ 跳过同步"
+              echo "⏭️ 跳过同步"
               echo "::endgroup::"
               continue
             fi
 
-            # 架构对比报告
-            echo "🔍 架构差异分析："
-            echo "━━━━━━━━━━━━━━━━━━━━━"
-            source_arch=$(skopeo inspect --raw "docker://${full_source}" | jq -r '
-              if .manifests then
-                [.manifests[].platform | "\(.os)/\(.architecture)\(.variant?//""|if .!="" then "/"+. else "" end)"] | join(", ")
-              else
-                "\(.Os)/\(.Architecture)\(.Variant?//""|if .!="" then "/"+. else "" end)"
-              end' 2>/dev/null || echo "<无法获取>")
-            
-            target_arch=$(skopeo inspect "docker://${full_target}" --raw 2>/dev/null | jq -r '
-              if .manifests then
-                [.manifests[].platform | "\(.os)/\(.architecture)\(.variant?//""|if .!="" then "/"+. else "" end)"] | join(", ")
-              else
-                "\(.Os)/\(.Architecture)\(.Variant?//""|if .!="" then "/"+. else "" end)"
-              end' 2>/dev/null || echo "<无历史版本>")
-            
-            printf "%-28s | %-28s\n" "源架构" "当前架构"
-            echo "─────────────────────────────┼─────────────────────────────"
-            printf "\033[32m%-28s\033[0m | \033[31m%-28s\033[0m\n" "$source_arch" "$target_arch"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-            # 架构检测
-            echo "🔄 检测源镜像架构..."
-            raw_manifest=$(skopeo inspect --raw "docker://${full_source}" | tee /tmp/manifest.txt)
+            # ====== 架构检测 ======
+            echo "🔄 检测架构信息..."
+            raw_manifest=$(skopeo inspect --raw "docker://${full_source}")
             is_multiarch=false
 
+            # 多架构判定
             if echo "$raw_manifest" | jq -e '
-              .manifests and 
-              (.manifests | length > 0) and 
+              (.manifests != null) and
+              (.manifests | length > 0) and
               (.mediaType | test("manifest.list|vnd.docker.distribution.manifest.list"))
             ' >/dev/null; then
               is_multiarch=true
-              arch_list=$(echo "$raw_manifest" | jq -r '
-                [.manifests[].platform | 
-                 select(.os and .architecture and .os != "unknown") |
-                 "\(.os)/\(.architecture)\(.variant?//""|if .!="" then "/"+. else "" end)"
-                ] | unique | join(", ")')
-              echo "⚙️ 多架构支持: ${arch_list}"
+              src_arch=$(echo "$raw_manifest" | jq -r '
+                [.manifests[] | 
+                 .platform as $p |
+                 select($p.os and $p.architecture and $p.os != "unknown") |
+                 "\($p.os)/\($p.architecture)\($p.variant? // "" | if . != "" then "/"+. else "" end)"
+                ] | unique | join(", ")
+              ')
+              echo "⚙️ 多架构支持: [${src_arch}]"
             else
-              inspect_data=$(skopeo inspect "docker://${full_source}")
-              os=$(echo "$inspect_data" | jq -r '.Os')
-              arch=$(echo "$inspect_data" | jq -r '.Architecture')
-              variant=$(echo "$inspect_data" | jq -r '.Variant? // ""')
-              [[ "$os" != "unknown" && "$arch" != "unknown" ]] && \
-                echo "⚙️ 单架构: ${os}/${arch}${variant:+/$variant}" || \
-                echo "::warning::无效架构信息 os:$os/arch:$arch"
+              # 单架构处理
+              inspect_info=$(skopeo inspect "docker://${full_source}")
+              os=$(jq -r '.Os // "unknown"' <<< "$inspect_info")
+              arch=$(jq -r '.Architecture // "unknown"' <<< "$inspect_info")
+              variant=$(jq -r '.Variant? // ""' <<< "$inspect_info")
+              if [[ "$os" != "unknown" && "$arch" != "unknown" ]]; then
+                src_arch="${os}/${arch}${variant:+/$variant}"
+                echo "⚙️ 单架构: ${src_arch}"
+              else
+                echo "::warning::无效架构 → OS: ${os}, 架构: ${arch}"
+                src_arch="<无效平台>"
+              fi
             fi
 
-            # 同步执行
+            # ====== 架构变更报告 ======
+            if [[ "$target_exists" == "true" ]]; then
+              echo "📊 架构变化报告:"
+              echo "┌──────────────────────────────┬──────────────────────────────┐"
+              echo "│          源架构               │          目标架构            │"
+              
+              # 获取目标架构
+              target_manifest=$(skopeo inspect --raw "docker://${full_target}" 2>/dev/null || true)
+              if [[ -n "$target_manifest" ]]; then
+                tgt_arch=$(echo "$target_manifest" | jq -r '
+                  if .manifests then
+                    [.manifests[].platform | 
+                     "\(.os)/\(.architecture)\(.variant? // "" | if . != "" then "/"+. else "" end)"
+                    ] | unique | join(", ")
+                  else
+                    "\(.os)/\(.architecture)\(.variant? // "")"
+                  end
+                ' 2>/dev/null || echo "<解析失败>")
+              else
+                tgt_arch="<无法获取>"
+              fi
+              
+              # 彩色输出对齐
+              printf "│\033[32m%-30s\033[0m│\033[31m%-30s\033[0m│\n" " ${src_arch}" " ${tgt_arch}"
+              echo "└──────────────────────────────┴──────────────────────────────┘"
+            fi
+
+            # ====== 执行同步 ======
             if [[ "$is_multiarch" == "true" ]]; then
-              echo "🚀 开始多架构同步..."
+              echo "🚢 同步多架构镜像..."
               docker buildx imagetools create -t "$full_target" "$full_source" || {
-                echo "::error::镜像同步失败"; exit 1
+                echo "::error::同步失败"; exit 1
               }
             else
-              echo "⚡ 执行单架构同步..."
+              echo "⚡ 同步单架构镜像..."
               docker pull --quiet "$full_source"
               docker tag "$full_source" "$full_target"
               docker push --quiet "$full_target" || {
-                echo "::error::镜像推送失败"; exit 1
+                echo "::error::推送失败"; exit 1
               }
             fi
-            
-            echo "✅ 同步完成 → $(date +"%Y-%m-%d %T")"
+
+            echo "✅ 同步完成"
             echo "::endgroup::"
           done
