@@ -20,14 +20,15 @@ jobs:
 
       - name: Process images
         run: |
-          set -e  # 任何命令失败立即退出
-          DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"  # 直接从secrets读取用户名
+          set -e
+          DEST_USER="${{ secrets.DOCKERHUB_USERNAME }}"
 
+          # 使用完整目标路径强制指定registry
           declare -A SYNC_MAP=(
-            ["nginx"]="nginx-m"
-            ["redis:7.0"]="redis:7"
-            ["chipsman/uptime-kuma"]="uptime-kuma-back"
-            ["chipsman/one-hub"]="one-hub"
+            ["nginx"]="docker.io/${DEST_USER}/nginx-m:latest"
+            ["redis:7.0"]="docker.io/${DEST_USER}/redis:7"
+            ["chipsman/uptime-kuma"]="docker.io/${DEST_USER}/uptime-kuma-back:latest"
+            ["chipsman/one-hub"]="docker.io/${DEST_USER}/one-hub:latest"
           )
 
           IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
@@ -35,41 +36,38 @@ jobs:
           for source_image in "${IMAGES[@]}"; do
             echo "====== Processing: $source_image ======"
 
-            # 构造完整源镜像地址
-            if [[ "$source_image" != *"/"* ]]; then
-              full_source="docker.io/library/$source_image"
+            # 严格构造源镜像路径
+            if [[ "$source_image" == *":"* ]]; then
+              src_tag="${source_image#*:}"
+              src_name="${source_image%:*}"
             else
-              full_source="docker.io/${source_image}"  # 补全registry
+              src_tag="latest"
+              src_name="$source_image"
             fi
 
-            # 获取目标镜像名称
-            target_ref="${SYNC_MAP[$source_image]}"
-            if [[ "$target_ref" == *":"* ]]; then
-              target_name="${target_ref%:*}"
-              target_tag="${target_ref#*:}"
+            if [[ "$src_name" != *"/"* ]]; then
+              full_source="docker.io/library/${src_name}:${src_tag}"
             else
-              target_name="$target_ref"
-              target_tag="latest"
+              full_source="docker.io/${src_name}:${src_tag}"
             fi
-            full_target="docker.io/${DEST_REPO}/${target_name}:${target_tag}"
+            
+            # 从同步映射获取完整目标路径
+            full_target="${SYNC_MAP[$source_image]}"
 
-            echo "[Debug] Source: $full_source → Target: $full_target"
+            echo "[VERBOSE] Conversion: ${full_source} → ${full_target}"
 
-            # 检查镜像架构
-            raw_manifest=$(skopeo inspect --raw "docker://${full_source}")
-            is_multiarch=$(echo "$raw_manifest" | jq -e 'has("manifests")')
-
-            # 执行同步
-            if [[ "$is_multiarch" == "true" ]]; then
-              echo "发现多架构镜像，使用buildx同步..."
-              docker buildx imagetools create -t "$full_target" "$full_source"
+            # 检查镜像架构类型
+            manifest=$(skopeo inspect --raw "docker://${full_source}")
+            if echo "$manifest" | jq -e '.manifests' >/dev/null; then
+              echo "Multi-architecture detected"
+              docker buildx imagetools create --debug -t "$full_target" "$full_source"
             else
-              echo "单架构镜像，直接复制..."
+              echo "Single-architecture detected"
               docker pull "$full_source"
               docker tag "$full_source" "$full_target"
               docker push "$full_target"
-            fi
+            done
 
-            echo "成功同步镜像: ${full_source} → ${full_target}"
+            echo "[SUCCESS] ✅ Synced ${full_target}"
             echo "======================================="
           done
