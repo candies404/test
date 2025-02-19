@@ -114,12 +114,20 @@ jobs:
           # 生成输出
           grouped_json=$(jq -n '{}')
           for dest in "${!grouped_rules[@]}"; do
-            sources=(${grouped_rules[$dest]})
-            grouped_json=$(echo "$grouped_json" | jq --arg dest "$dest" --arg sources "${sources[*]}" '. + { ($dest): ($sources | split(" ")) }')
+          sources=(${grouped_rules[$dest]})
+          grouped_json=$(echo "$grouped_json" | jq --arg dest "$dest" --arg sources "${sources[*]}" '. + { ($dest): ($sources | split(" ")) }')
           done
           echo "grouped_rules=$(echo $grouped_json | jq -c)" >> $GITHUB_OUTPUT
-          echo "unique_sources=$(jq -c -n '$ARGS.positional' --args "${unique_sources[@]}")" >> $GITHUB_OUTPUT
-          echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
+
+          # 处理unique_sources输出
+          if [ ${#unique_sources[@]} -eq 0 ]; then
+              echo "unique_sources=[]" >> $GITHUB_OUTPUT
+          else
+              sources_json=$(printf '%s\n' "${unique_sources[@]}" | jq -R . | jq -s . | jq -c .)
+              echo "unique_sources=$sources_json" >> $GITHUB_OUTPUT
+          fi
+
+        echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
       # 检查架构信息
       - name: Check architectures
