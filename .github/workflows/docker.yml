@@ -12,13 +12,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo jq
-          sudo mkdir -p /etc/docker
-          # 安装最新docker（包含buildx）
-          curl -fsSL https://get.docker.com | sh
-          # 配置buildx多架构支持
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-          docker buildx create --use
+          sudo apt-get install -y skopeo
 
       - name: Docker login
         env:
@@ -45,30 +39,28 @@ jobs:
             
             # 获取目标镜像名称（自动添加用户名前缀）
             target_path="${SYNC_MAP[$source_image]}"
-            target_image="$DEST_REPO/${target_path%%:*}"  # 去掉可能存在的tag部分
             if [[ "$source_image" == *":"* ]]; then
               source_tag="${source_image#*:}"
-              target_image="$target_image:${target_path#*:}"  # 使用自定义tag
+              target_image="$DEST_REPO/${target_path%%:*}:${target_path#*:}"  # 处理带tag的情况
             else
-              target_image="$target_image:latest"  # 默认tag
+              target_image="$DEST_REPO/${target_path}:latest"  # 无tag时使用latest
             fi
 
-            # 转换镜像registry路径（处理官方镜像的完整路径）
-            full_source_image="$source_image"
+            # 构造完整源镜像路径
             if [[ "$source_image" != *"/"* ]]; then
               full_source_image="docker.io/library/$source_image"
-            elif [[ "$source_image" != *"docker.io/"* ]]; then
+            else
               full_source_image="docker.io/$source_image"
             fi
 
-            # 检查原始镜像架构
+            # 检查是否是多架构镜像
             raw_data=$(skopeo inspect --raw "docker://$full_source_image")
             is_multiarch=$(echo "$raw_data" | jq -e '.manifests != null')
 
-            # 同步命令（支持多架构镜像）
+            # 执行同步
             if [ "$is_multiarch" = "true" ]; then
               echo "发现多架构镜像，使用buildx同步..."
-              docker buildx imagetools create -t "$target_image" "docker://$full_source_image"
+              docker buildx imagetools create -t "$target_image" "$full_source_image"  # 重点修改处
             else
               echo "单架构镜像，直接复制..."
               docker pull "$full_source_image"
@@ -76,9 +68,7 @@ jobs:
               docker push "$target_image"
             fi
 
-            # 输出同步结果
-            echo "成功同步镜像:"
-            echo "源镜像: $full_source_image"
-            echo "目标镜像: $target_image"
+            echo "成功同步镜像: $full_source_image => $target_image"
             echo "======================================="
           done
+v
