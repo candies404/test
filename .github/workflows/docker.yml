@@ -81,7 +81,7 @@ jobs:
               target_name="$target_ref"
               target_tag="$source_tag"  # 继承源标签
             fi
-            full_target="dockerpull.cn/${DEST_REPO}/${target_name}:${target_tag}"
+            full_target="docker.io/${DEST_REPO}/${target_name}:${target_tag}"
 
             # ====== 源镜像验证 ======
             echo "🔎 验证: ${full_source} → ${full_target}"
