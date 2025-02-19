@@ -1,79 +1,84 @@
-name: Docker Image Sync
+name: Image Arch Check and Sync
 
 on:
   workflow_dispatch:
 
 jobs:
-  sync-images:
+  check-and-sync:
     runs-on: ubuntu-latest
-
+    env:
+      DEST_REPO: chipsman  # 默认值，实际从secrets读取
     steps:
-    - name: Install tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y skopeo
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo jq
+          sudo mkdir -p /etc/docker
+          # 安装最新docker（包含buildx）
+          curl -fsSL https://get.docker.com | sh
+          # 配置buildx多架构支持
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          docker buildx create --use
 
-    - name: Sync images to Docker Hub
-      env:
-        DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      run: |
-        # 定义镜像映射规则
-        declare -A image_map=(
-          ["nginx"]="nginx-m"
-          ["redis:7.0"]="redis:7"
-          ["chipsman/uptime-kuma"]="uptime-kuma-back"
-          ["chipsman/one-hub"]="one-hub"
-        )
+      - name: Docker login
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          # 设置环境变量供后续步骤使用
+          echo "DEST_REPO=$DOCKERHUB_USERNAME" >> $GITHUB_ENV
 
-        # 源镜像列表
-        IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
+      - name: Process images
+        run: |
+          declare -A SYNC_MAP=(
+            ["nginx"]="nginx-m"
+            ["redis:7.0"]="redis:7"
+            ["chipsman/uptime-kuma"]="uptime-kuma-back"
+            ["chipsman/one-hub"]="one-hub"
+          )
 
-        # Docker Hub 登录
-        echo "$DOCKERHUB_TOKEN" | docker login -u $DOCKERHUB_USERNAME --password-stdin docker.io
+          IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
 
-        # 镜像同步处理
-        for image in "${IMAGES[@]}"; do
-          # 检查映射规则是否存在
-          if [[ -z "${image_map[$image]}" ]]; then
-            echo "⚠️ 未找到映射规则: $image，跳过..."
-            continue
-          fi
+          for source_image in "${IMAGES[@]}"; do
+            echo "====== 处理镜像: $source_image ======"
+            
+            # 获取目标镜像名称（自动添加用户名前缀）
+            target_path="${SYNC_MAP[$source_image]}"
+            target_image="$DEST_REPO/${target_path%%:*}"  # 去掉可能存在的tag部分
+            if [[ "$source_image" == *":"* ]]; then
+              source_tag="${source_image#*:}"
+              target_image="$target_image:${target_path#*:}"  # 使用自定义tag
+            else
+              target_image="$target_image:latest"  # 默认tag
+            fi
 
-          # 解析源镜像
-          if [[ "$image" == *":"* ]]; then
-            src_repo="${image%:*}"
-            src_tag="${image#*:}"
-          else
-            src_repo="$image"
-            src_tag="latest"
-          fi
+            # 转换镜像registry路径（处理官方镜像的完整路径）
+            full_source_image="$source_image"
+            if [[ "$source_image" != *"/"* ]]; then
+              full_source_image="docker.io/library/$source_image"
+            elif [[ "$source_image" != *"docker.io/"* ]]; then
+              full_source_image="docker.io/$source_image"
+            fi
 
-          # 解析目标映射
-          target="${image_map[$image]}"
-          if [[ "$target" == *":"* ]]; then
-            tgt_repo="${target%:*}"
-            tgt_tag="${target#*:}"
-          else
-            tgt_repo="$target"
-            tgt_tag="$src_tag"
-          fi
+            # 检查原始镜像架构
+            raw_data=$(skopeo inspect --raw "docker://$full_source_image")
+            is_multiarch=$(echo "$raw_data" | jq -e '.manifests != null')
 
-          # 构建完整镜像地址
-          src_full="docker://$image"
-          tgt_full="docker.io/$DOCKERHUB_USERNAME/$tgt_repo:$tgt_tag"
+            # 同步命令（支持多架构镜像）
+            if [ "$is_multiarch" = "true" ]; then
+              echo "发现多架构镜像，使用buildx同步..."
+              docker buildx imagetools create -t "$target_image" "docker://$full_source_image"
+            else
+              echo "单架构镜像，直接复制..."
+              docker pull "$full_source_image"
+              docker tag "$full_source_image" "$target_image"
+              docker push "$target_image"
+            fi
 
-          # 执行同步操作
-          echo "🔄 正在同步: $src_full → $tgt_full"
-          docker buildx imagetools create -t "$tgt_full" "$src_full"
-          
-          # 添加状态标记
-          if [ $? -eq 0 ]; then
-            echo "✅ 同步成功"
-          else
-            echo "❌ 同步失败"
-          fi
-          echo "----------------------------------------"
-        done
-
-        echo "🎉 所有镜像同步完成！"
+            # 输出同步结果
+            echo "成功同步镜像:"
+            echo "源镜像: $full_source_image"
+            echo "目标镜像: $target_image"
+            echo "======================================="
+          done
