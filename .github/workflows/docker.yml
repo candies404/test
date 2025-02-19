@@ -26,7 +26,9 @@ jobs:
           set -eo pipefail
           DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"
           SYNC_ENTRIES="nginx=nginx-m,redis:7.0=redis:7,chipsman/uptime-kuma=uptime-kuma-back,chipsman/one-hub=one-hub"
-
+          echo "完整同步配置："
+          echo "SYNC_ENTRIES: ${SYNC_ENTRIES}"
+          echo "DEST_REPO: ${DEST_REPO}"
           # ============== 配置解析 ==============
           declare -A SYNC_MAP
           IFS=',' read -ra entries <<< "$SYNC_ENTRIES"
@@ -41,15 +43,21 @@ jobs:
           for source_image in "${IMAGES[@]}"; do
             echo "::group::🔍 处理 $source_image"
             
+            # 修改路径构造部分如下：
             # ======= 路径构造 =======
             if [[ "$source_image" == *":"* ]]; then
-              source_name="${source_image%:*}"
-              source_tag="${source_image#*:}"
+            source_name="${source_image%:*}"
+            source_tag="${source_image#*:}"
             else
-              source_name="$source_image"
-              source_tag="latest"
+            source_name="$source_image"
+            source_tag="latest"
             fi
-            full_source="docker.io/$([[ "$source_name" != *"/"* ]] && echo "library/")${source_name}:$source_tag"
+            # 修复library/前缀逻辑（仅适用于官方镜像）
+            if [[ "$source_name" == *"/"* ]]; then
+            full_source="docker.io/${source_name}:${source_tag}"
+            else
+            full_source="docker.io/library/${source_name}:${source_tag}"
+            fi
 
             # ======= 目标处理 =======
             target_ref="${SYNC_MAP[$source_image]}"
