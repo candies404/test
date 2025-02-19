@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo
+          sudo apt-get install -y skopeo jq
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
@@ -35,11 +35,16 @@ jobs:
       - name: Process images
         run: |
           set -eo pipefail
+          # ============== 全局配置 ==============
+          MIRROR_ADDR="dockerpull.cn"
           DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"
+          REGISTRY_AUTH="${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}"
           SYNC_ENTRIES="nginx=nginx-m,redis:7.0=redis:7,chipsman/uptime-kuma=uptime-kuma-back,chipsman/one-hub=one-hub"
+
           echo "完整同步配置："
           echo "SYNC_ENTRIES: ${SYNC_ENTRIES}"
-          echo "DEST_REPO: ${DEST_REPO}"
+          echo "镜像加速地址: ${MIRROR_ADDR}"
+
           # ============== 配置解析 ==============
           declare -A SYNC_MAP
           IFS=',' read -ra entries <<< "$SYNC_ENTRIES"
@@ -54,20 +59,22 @@ jobs:
           for source_image in "${IMAGES[@]}"; do
             echo "::group::🔍 处理 $source_image"
             
-            # 修改路径构造部分如下：
             # ======= 路径构造 =======
             if [[ "$source_image" == *":"* ]]; then
-            source_name="${source_image%:*}"
-            source_tag="${source_image#*:}"
+              source_name="${source_image%:*}"
+              source_tag="${source_image#*:}"
             else
-            source_name="$source_image"
-            source_tag="latest"
+              source_name="$source_image"
+              source_tag="latest"
             fi
-            # 修复library/前缀逻辑（仅适用于官方镜像）
+
+            # 构造镜像地址（统一使用镜像加速器）
             if [[ "$source_name" == *"/"* ]]; then
-            full_source="docker.io/${source_name}:${source_tag}"
+              mirror_source="${MIRROR_ADDR}/${source_name}:${source_tag}"
+              origin_source="docker.io/${source_name}:${source_tag}"
             else
-            full_source="docker.io/library/${source_name}:${source_tag}"
+              mirror_source="${MIRROR_ADDR}/library/${source_name}:${source_tag}"
+              origin_source="docker.io/library/${source_name}:${source_tag}"
             fi
 
             # ======= 目标处理 =======
@@ -79,23 +86,27 @@ jobs:
               target_tag="${target_ref#*:}"
             else
               target_name="$target_ref"
-              target_tag="$source_tag"  # 继承源标签
+              target_tag="$source_tag"
             fi
             full_target="docker.io/${DEST_REPO}/${target_name}:${target_tag}"
 
             # ====== 源镜像验证 ======
-            echo "🔎 验证: ${full_source} → ${full_target}"
-            if ! skopeo inspect "docker://${full_source}" >/dev/null 2>&1; then
-              echo "::error::源镜像不可访问"; exit 1
+            echo "🔎 验证: ${mirror_source} → ${full_target}"
+            if ! skopeo inspect --creds="$REGISTRY_AUTH" "docker://${mirror_source}" >/dev/null 2>&1; then
+              echo "::warning::镜像加速器访问失败，尝试直连源站"
+              if ! skopeo inspect --creds="$REGISTRY_AUTH" "docker://${origin_source}" >/dev/null 2>&1; then
+                echo "::error::源镜像不可访问"; exit 1
+              fi
+              mirror_source="$origin_source"
             fi
 
             # ====== 版本对比 ======
             need_sync=true
             target_exists=false
-            if skopeo inspect "docker://${full_target}" &>/dev/null; then
+            if skopeo inspect --creds="$REGISTRY_AUTH" "docker://${full_target}" &>/dev/null; then
               target_exists=true
-              source_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${full_source}")
-              target_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${full_target}")
+              source_digest=$(skopeo inspect --creds="$REGISTRY_AUTH" --format '{{.Digest}}' "docker://${mirror_source}")
+              target_digest=$(skopeo inspect --creds="$REGISTRY_AUTH" --format '{{.Digest}}' "docker://${full_target}")
               
               if [[ "$source_digest" == "$target_digest" ]]; then
                 echo "🟢 当前已是最新版本"
@@ -107,7 +118,6 @@ jobs:
               echo "🟡 目标镜像不存在，需要创建"
             fi
 
-            # ====== 跳过检查 ======
             if [[ "$need_sync" == "false" ]]; then
               echo "⏭️ 跳过同步"
               echo "::endgroup::"
@@ -116,7 +126,7 @@ jobs:
 
             # ====== 架构检测 ======
             echo "🔄 检测架构信息..."
-            raw_manifest=$(skopeo inspect --raw "docker://${full_source}")
+            raw_manifest=$(skopeo inspect --raw --creds="$REGISTRY_AUTH" "docker://${mirror_source}")
             is_multiarch=false
 
             # 多架构判定
@@ -136,7 +146,7 @@ jobs:
               echo "⚙️ 多架构支持: [${src_arch}]"
             else
               # 单架构处理
-              inspect_info=$(skopeo inspect "docker://${full_source}")
+              inspect_info=$(skopeo inspect --creds="$REGISTRY_AUTH" "docker://${mirror_source}")
               os=$(jq -r '.Os // "unknown"' <<< "$inspect_info")
               arch=$(jq -r '.Architecture // "unknown"' <<< "$inspect_info")
               variant=$(jq -r '.Variant? // ""' <<< "$inspect_info")
@@ -155,8 +165,7 @@ jobs:
               echo "┌──────────────────────────────┬──────────────────────────────┐"
               echo "│          源架构               │          目标架构            │"
               
-              # 获取目标架构
-              target_manifest=$(skopeo inspect --raw "docker://${full_target}" 2>/dev/null || true)
+              target_manifest=$(skopeo inspect --raw --creds="$REGISTRY_AUTH" "docker://${full_target}" 2>/dev/null || true)
               if [[ -n "$target_manifest" ]]; then
                 tgt_arch=$(echo "$target_manifest" | jq -r '
                   if .manifests then
@@ -171,24 +180,24 @@ jobs:
                 tgt_arch="<无法获取>"
               fi
               
-              # 彩色输出对齐
               printf "│\033[32m%-30s\033[0m│\033[31m%-30s\033[0m│\n" " ${src_arch}" " ${tgt_arch}"
               echo "└──────────────────────────────┴──────────────────────────────┘"
             fi
 
             # ====== 执行同步 ======
             if [[ "$is_multiarch" == "true" ]]; then
-            echo "🚢 同步多架构镜像..."
-            docker buildx imagetools create -t "$full_target" "$full_source" || {
-                echo "::error::同步失败"; exit 1
-            }
+              echo "🚢 同步多架构镜像..."
+              docker buildx imagetools create -t "$full_target" "$mirror_source" || {
+                echo "::error::多架构同步失败"; exit 1
+              }
             else
-            echo "⚡ 使用Skopeo同步单架构镜像..."
-            skopeo copy --all \
-                --src-creds="${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" \
-                --dest-creds="${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" \
-                "docker://${full_source}" "docker://${full_target}" || {
-                echo "::error::同步失败"; exit 1
+              echo "⚡ 使用Skopeo同步单架构镜像..."
+              skopeo copy --all \
+                --src-creds="$REGISTRY_AUTH" \
+                --dest-creds="$REGISTRY_AUTH" \
+                "docker://${mirror_source}" \
+                "docker://${full_target}" || {
+                  echo "::error::单架构同步失败"; exit 1
                 }
             fi
 
