@@ -1,6 +1,5 @@
 name: Multi-arch Image Sync
 
-# 触发条件
 on:
   workflow_dispatch:
     inputs:
@@ -12,35 +11,35 @@ jobs:
   sync-images:
     runs-on: ubuntu-latest
     steps:
-    # 检出代码
+      # Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 安装依赖
+      # Install dependencies
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y skopeo
 
-      # 验证和处理同步映射
+      # Validate and process sync mappings
       - name: Validate and process SYNC_MAPPINGS
         id: process-sync-mappings
         env:
           SYNC_MAPPINGS_INPUT: ${{ inputs.sync_mappings || vars.SYNC_MAPPINGS }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          # 定义镜像名称正则表达式
-          IMAGE_REGEX='^([a-z0-9]+([._-][a-z0-9]+)*)(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?$'
+          # Define image name regex
+          IMAGE_REGEX='^([a-z0-9]+([._-][a-z0-9]+)*)(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)?'
 
-          # 验证镜像名称格式
+          # Validate image format
           function validate_image() {
             local image=$1
             local type=$2
             
-            # 清理控制字符和首尾空格
+            # Clean control characters and trim spaces
             clean_image=$(echo "$image" | tr -d '\r\n' | xargs)
             
-            # 自动补全镜像名称
+            # Auto-complete image names
             if [[ "$type" == "source" && "$clean_image" != */* ]]; then
               clean_image="docker.io/library/${clean_image}"
             elif [[ "$type" == "dest" ]]; then
@@ -52,7 +51,7 @@ jobs:
               fi
             fi
 
-            # 格式验证
+            # Format validation
             if [[ ! "$clean_image" =~ $IMAGE_REGEX ]]; then
               echo "::error::错误的${type}镜像格式: $image → $clean_image"
               return 1
@@ -61,18 +60,18 @@ jobs:
             echo "$clean_image"
           }
 
-          # 主处理逻辑
+          # Main processing logic
           if [ -z "$SYNC_MAPPINGS_INPUT" ]; then
             echo "::error::SYNC_MAPPINGS 未设置，请提供同步规则。"
             exit 1
           fi
 
-          # 初始化数据结构
+          # Initialize data structures
           declare -A processed_rules
           declare -A grouped_rules
           declare -a unique_sources
           
-          # 处理同步规则
+          # Process sync rules
           IFS=',' read -ra RULES <<< "$SYNC_MAPPINGS_INPUT"
           for rule in "${RULES[@]}"; do
             rule=$(echo "$rule" | xargs)
@@ -83,47 +82,47 @@ jobs:
               continue
             fi
 
-            # 拆分源镜像和目标镜像
+            # Split source and destination images
             raw_source="${rule%%=*}"
             raw_dest="${rule#*=}"
 
-            # 验证并处理源镜像
+            # Validate and process source image
             if ! source_image=$(validate_image "$raw_source" "source"); then
               exit 1
             fi
 
-            # 验证并处理目标镜像
+            # Validate and process destination image
             if ! dest_image=$(validate_image "$raw_dest" "dest"); then
               exit 1
             fi
 
-            # 去重处理
+            # Deduplicate rules
             key="$source_image=$dest_image"
             [[ -n "${processed_rules[$key]}" ]] && continue
             processed_rules["$key"]=1
 
-            # 分组聚合
+            # Group rules by destination
             if [[ -z "${grouped_rules[$dest_image]}" ]]; then
               grouped_rules["$dest_image"]="$source_image"
             else
               grouped_rules["$dest_image"]+=" $source_image"
             fi
 
-            # 记录唯一源镜像
+            # Record unique source images
             if [[ ! " ${unique_sources[@]} " =~ " ${source_image} " ]]; then
               unique_sources+=("$source_image")
             fi
           done
 
-          # 生成输出
+          # Generate output
           grouped_json=$(jq -n '{}')
           for dest in "${!grouped_rules[@]}"; do
-          sources=(${grouped_rules[$dest]})
-          grouped_json=$(echo "$grouped_json" | jq --arg dest "$dest" --arg sources "${sources[*]}" '. + { ($dest): ($sources | split(" ")) }')
+            sources=(${grouped_rules[$dest]})
+            grouped_json=$(echo "$grouped_json" | jq --arg dest "$dest" --arg sources "${sources[*]}" '. + { ($dest): ($sources | split(" ")) }')
           done
           echo "grouped_rules=$(echo $grouped_json | jq -c)" >> $GITHUB_OUTPUT
 
-          # 生成唯一源镜像输出
+          # Generate unique sources output
           if [ ${#unique_sources[@]} -eq 0 ]; then
               echo "unique_sources=[]" >> $GITHUB_OUTPUT
           else
@@ -131,9 +130,9 @@ jobs:
               echo "unique_sources=$sources_json" >> $GITHUB_OUTPUT
           fi
 
-        echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
+          echo "total_rules=${#processed_rules[@]}" >> $GITHUB_OUTPUT
 
-      # 检查镜像架构信息
+      # Check image architectures
       - name: Check architectures
         run: |
           unique_sources=${{ steps.process-sync-mappings.outputs.unique_sources }}
@@ -148,7 +147,7 @@ jobs:
               continue
             fi
 
-            # 处理多架构镜像
+            # Process multi-arch images
             if echo "$raw_data" | jq -e '.manifests and (.mediaType | contains("manifest.list"))' >/dev/null; then
               archs=$(echo "$raw_data" | jq -r '
                 [.manifests[] | 
@@ -170,7 +169,7 @@ jobs:
               ')
               type="多架构"
             else
-              # 处理单架构镜像
+              # Process single-arch images
               inspect_info=$(skopeo inspect "docker://$image")
               os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
               arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
@@ -188,14 +187,14 @@ jobs:
               "$image" "$type" "${archs}" "----------------------------------------"
           done
 
-      # 登录 DockerHub
+      # Login to DockerHub
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 执行镜像同步
+      # Sync images
       - name: Sync images
         id: sync-images
         run: |
@@ -204,7 +203,7 @@ jobs:
           SYNC_EXECUTED=0
           declare -a failed_rules=()
 
-          # 执行同步操作
+          # Execute sync operations
           while IFS== read -r dest sources; do
             echo "🔄 正在同步: $sources → $dest"
             if docker buildx imagetools create -t "$dest" $sources; then
@@ -218,18 +217,18 @@ jobs:
             echo "----------------------------------------"
           done < <(echo "$grouped_rules" | jq -r 'to_entries[] | "\(.key)=\(.value | join(" "))"')
 
-          # 生成同步结果
+          # Generate sync results
           failed_rules_json=$(jq -c -n '$ARGS.positional' --args "${failed_rules[@]}")
           echo "SYNC_EXECUTED=$SYNC_EXECUTED" >> $GITHUB_OUTPUT
           echo "failed_rules=$failed_rules_json" >> $GITHUB_OUTPUT
 
-          # 检查是否存在失败的同步任务
+          # Check for failed sync tasks
           if [ ${#failed_rules[@]} -gt 0 ]; then
             echo "::error::存在失败的同步任务"
             exit 1
           fi
 
-      # 汇报结果
+      # Generate report
       - name: Generate report
         run: |
           total_rules=${{ steps.process-sync-mappings.outputs.total_rules }}
