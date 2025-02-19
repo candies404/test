@@ -178,17 +178,18 @@ jobs:
 
             # ====== 执行同步 ======
             if [[ "$is_multiarch" == "true" ]]; then
-              echo "🚢 同步多架构镜像..."
-              docker buildx imagetools create -t "$full_target" "$full_source" || {
+            echo "🚢 同步多架构镜像..."
+            docker buildx imagetools create -t "$full_target" "$full_source" || {
                 echo "::error::同步失败"; exit 1
-              }
+            }
             else
-              echo "⚡ 同步单架构镜像..."
-              docker pull --quiet "$full_source"
-              docker tag "$full_source" "$full_target"
-              docker push --quiet "$full_target" || {
-                echo "::error::推送失败"; exit 1
-              }
+            echo "⚡ 使用Skopeo同步单架构镜像..."
+            skopeo copy --all \
+                --src-creds="${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" \
+                --dest-creds="${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" \
+                "docker://${full_source}" "docker://${full_target}" || {
+                echo "::error::同步失败"; exit 1
+                }
             fi
 
             echo "✅ 同步完成"
