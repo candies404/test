@@ -1,4 +1,4 @@
-name: Image Arch Check and Sync
+name: Image Arch Check and Sync Enhanced
 
 on:
   workflow_dispatch:
@@ -7,11 +7,14 @@ jobs:
   check-and-sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3  # 确保buildx环境可用
+
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y skopeo
-          
+          sudo apt-get install -y skopeo jq
+
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
@@ -20,23 +23,22 @@ jobs:
 
       - name: Process images
         run: |
-          set -eo pipefail  # 增强的错误处理
+          set -eo pipefail
           DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"
 
           declare -A SYNC_MAP=(
-            ["nginx"]="nginx-m"
+            ["nginx"]="nginx-m" 
             ["redis:7.0"]="redis:7"
             ["chipsman/uptime-kuma"]="uptime-kuma-back"
             ["chipsman/one-hub"]="one-hub"
           )
+
           IMAGES=("nginx" "redis:7.0" "chipsman/uptime-kuma" "chipsman/one-hub")
 
           for source_image in "${IMAGES[@]}"; do
-            echo "::group::Processing $source_image"
-            echo "======= [START] Processing: $source_image ======="
+            echo "::group::🔍 Processing $source_image"
             
-            # ------------------- 路径构造验证 --------------------
-            # 处理源镜像标签
+            # ============== 路径构造 ==============
             if [[ "$source_image" == *":"* ]]; then
               source_name="${source_image%:*}"
               source_tag="${source_image#*:}"
@@ -45,21 +47,18 @@ jobs:
               source_tag="latest"
             fi
 
-            # 构造完整的源镜像地址
-            if [[ "$source_name" != *"/"* ]]; then
-              full_source="docker.io/library/${source_name}:${source_tag}"
-            else
-              full_source="docker.io/${source_name}:${source_tag}"
-            fi
+            full_source="docker.io/$(
+              [[ "$source_name" != *"/"* ]] \
+                && echo "library/$source_name" \
+                || echo "$source_name"
+            ):${source_tag}"
 
-            # 处理目标映射
             target_ref="${SYNC_MAP[$source_image]}"
             if [[ -z "$target_ref" ]]; then
-              echo "::error::没有找到映射配置: ${source_image}"
+              echo "::error::找不到目标镜像映射"
               exit 1
             fi
 
-            # 分解目标名称和标签
             if [[ "$target_ref" == *":"* ]]; then
               target_name="${target_ref%:*}"
               target_tag="${target_ref#*:}"
@@ -69,56 +68,64 @@ jobs:
             fi
             full_target="docker.io/${DEST_REPO}/${target_name}:${target_tag}"
 
-            # 打印路径验证
-            echo "[Path Debug]"
-            echo "Source Image: $full_source"
-            echo "Target Image: $full_target"
-            
-            # ------------------- 镜像存在性检查 --------------------
-            echo "::notice::验证源镜像可访问性..."
+            # ============== 初步验证 ==============
+            echo "[版本验证]"
+            echo "源: ${full_source}"
+            echo "目标: ${full_target}"
             if ! skopeo inspect "docker://${full_source}" >/dev/null 2>&1; then
-              echo "::error::源镜像不存在或无法访问: ${full_source}"
+              echo "::error::无法访问源镜像"
               exit 1
             fi
 
-            # ------------------- Manifest检查 --------------------
-            echo "::notice::检查镜像架构..."
-            raw_manifest=$(skopeo inspect --raw "docker://${full_source}" 2>&1 || {
-              echo "::error::获取manifest失败: $?"
-              exit 1
-            })
+            # ============== 架构检测 ==============
+            echo "🔄 检测架构信息..."
+            raw_manifest=$(skopeo inspect --raw "docker://${full_source}" | tee /tmp/manifest.txt)
+            is_multiarch=false
 
-            # 检查jq解析结果
-            is_multiarch=$(echo "$raw_manifest" | jq -e 'has("manifests")' 2>&1 || {
-              echo "::error::jq解析失败: $?"
-              echo "原始Manifest片段: ${raw_manifest:0:200}"  # 显示前200字符
-              exit 1
-            })
+            # 新的双重判定逻辑（兼容OCIManifest和manifest.list）
+            if echo "$raw_manifest" | jq -e '
+              (.manifests != null) and
+              (
+                (.mediaType | contains("manifest.list")) or 
+                (.mediaType | contains("vnd.docker.distribution.manifest.list")) or
+                (.manifests | length > 0)
+              )
+            ' >/dev/null; then
+              is_multiarch=true
+              arch_list=$(echo "$raw_manifest" | jq -r '
+                [.manifests[] | 
+                  .platform as $p |
+                  select($p.os and $p.architecture) |
+                  "\($p.os)/\($p.architecture)\($p.variant // "" | if . != "" then "/"+. else "" end)"
+                ] | unique | join(", ")
+              ')
+              echo "⚙️ 检测到多架构镜像 → 支持架构: [${arch_list}]"
+            else
+              # 单架构镜像路径
+              inspect_info=$(skopeo inspect "docker://${full_source}")
+              os=$(echo "$inspect_info" | jq -r '.Os // "unknown"')
+              arch=$(echo "$inspect_info" | jq -r '.Architecture // "unknown"')
+              variant=$(echo "$inspect_info" | jq -r '.Variant? // ""')
+              echo "⚙️ 单架构镜像 → ${os}/${arch}${variant:+/${variant}}"
+            fi
 
-            # ------------------- 镜像同步 --------------------
+            # ============== 镜像同步 ==============
             if [[ "$is_multiarch" == "true" ]]; then
-              echo "::notice::发现多架构镜像，使用buildx同步..."
-              docker buildx imagetools create -t "$full_target" "$full_source" || {
+              echo "🚢 多架构镜像同步 → 使用buildx"
+              docker buildx imagetools create --force-rm -t "$full_target" "$full_source" || {
                 echo "::error::buildx同步失败"
                 exit 1
               }
             else
-              echo "::notice::单架构镜像，直接复制..."
-              docker pull "$full_source" || {
-                echo "::error::拉取镜像失败"
-                exit 1
-              }
-              docker tag "$full_source" "$full_target" || {
-                echo "::error::镜像tag操作失败"
-                exit 1
-              }
-              docker push "$full_target" || {
-                echo "::error::推送镜像失败"
+              echo "⚡ 单架构镜像同步 → 直接推送"
+              docker pull -q "$full_source"
+              docker tag "$full_source" "$full_target"
+              docker push --quiet "$full_target" || {
+                echo "::error::镜像推送失败"
                 exit 1
               }
             fi
 
-            echo "✅ 成功同步镜像: ${full_source} → ${full_target}"
-            echo "======= [END] Processing: $source_image ======="
+            echo "✅ $source_image 同步完成"
             echo "::endgroup::"
           done
