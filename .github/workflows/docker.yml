@@ -22,6 +22,8 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Process images
+        env:
+          SKOPEO_AUTHFILE: /home/runner/.docker/config.json
         run: |
           set -eo pipefail
           DEST_REPO="${{ secrets.DOCKERHUB_USERNAME }}"
