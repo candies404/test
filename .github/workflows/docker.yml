@@ -24,20 +24,20 @@ jobs:
           sudo apt-get update && sudo apt-get install -y skopeo
           echo "✅ Dependencies installed"
 
-      - name: Configure Docker authentication
-        run: |
-          mkdir -p $HOME/.docker
-          auth_token=$(echo -n "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" | base64 -w 0)
-          cat > $HOME/.docker/config.json <<EOF
-          {
-            "auths": {
-              "https://index.docker.io/v1/": {
-                "auth": "${auth_token}"
-              }
-            }
-          }
-          EOF
-          echo "🔐 Docker authentication configured"
+      # - name: Configure Docker authentication
+      #   run: |
+      #     mkdir -p $HOME/.docker
+      #     auth_token=$(echo -n "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" | base64 -w 0)
+      #     cat > $HOME/.docker/config.json <<EOF
+      #     {
+      #       "auths": {
+      #         "https://index.docker.io/v1/": {
+      #           "auth": "${auth_token}"
+      #         }
+      #       }
+      #     }
+      #     EOF
+      #     echo "🔐 Docker authentication configured"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -55,7 +55,7 @@ jobs:
           # 同步配置
           declare -A SYNC_MAP=(
             ['nginx']='nginx-m'
-            ['redis:7.0']='redis:7' 
+            ['redis:7.0']='redis:7'
             ['chipsman/uptime-kuma']='uptime-kuma-back'
           )
 
@@ -73,9 +73,15 @@ jobs:
             local message=$2
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             case $level in
-              "INFO")  echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" ;;
-              "WARN")  echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2 ;;
-              "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2 ;;
+              "INFO")
+                echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}"
+                ;;
+              "WARN")
+                echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2
+                ;;
+              "ERROR")
+                echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2
+                ;;
             esac
           }
 
@@ -120,49 +126,61 @@ jobs:
             local image=$1
             log "INFO" "获取架构信息：${COLOR_SRC}${image}${COLOR_RESET}"
             
-            local manifest
-            if ! manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>&1); then
-                log "ERROR" "无法获取镜像清单：${manifest}"
-                return 1
-            fi
-
-            if jq -e '.manifests != null' <<< "$manifest" &>/dev/null; then
-                local arch_list=$(jq -r '
-                [.manifests[].platform | 
-                    select(.os != "unknown" and .architecture != "unknown") |
-                    "\(.os)/\(.architecture)\(if .variant then "/"+.variant else "" end)"
-                ] | unique | join(", ")' <<< "$manifest")
-                
-                [[ -z "$arch_list" ]] && { log "ERROR" "没有找到有效的架构信息"; return 1; }
-                
-                log "INFO" "检测到多架构镜像：${arch_list}"
-                # echo "$arch_list"
+            # 先尝试检查是否是多架构镜像
+            if raw_manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>&1) &&
+              jq -e '.manifests != null and (.mediaType | contains("manifest.list"))' <<< "$raw_manifest" &>/dev/null; then
+              
+              # 处理多架构镜像
+              local arch_list
+              arch_list=$(jq -r '
+                [.manifests[].platform |
+                  select(.os != "unknown" and .architecture != "unknown") |
+                  "\(.os)/\(.architecture)\(if .variant and .variant != "" then "/"+.variant else "" end)"
+                ] | unique | join(", ")' <<< "$raw_manifest")
+              
+              [[ -z "$arch_list" ]] && { log "ERROR" "没有找到有效的架构信息"; return 1; }
+              log "INFO" "检测到多架构镜像：${arch_list// /,}"
+              echo "$arch_list"
+              return 0
             else
-              # 新增架构信息解析逻辑
-                local schema_version=$(jq -r '.schemaVersion? // "1"' <<< "$manifest")
-                case $schema_version in
-                "1")
-                    os=$(jq -r '.os // "unknown"' <<< "$manifest")
-                    arch=$(jq -r '.architecture // "unknown"' <<< "$manifest")
-                    ;;
-                "2")
-                    config_digest=$(jq -r '.config.digest' <<< "$manifest")
-                    if [[ -n "$config_digest" && "$config_digest" != "null" ]]; then
-                    if config_json=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}@${config_digest}" 2>/dev/null); then
-                        os=$(jq -r '.os // empty' <<< "$config_json")
-                        arch=$(jq -r '.architecture // empty' <<< "$config_json")
-                    fi
-                    fi
-                    os=${os:-unknown}
-                    arch=${arch:-unknown}
-                    ;;
-                esac
+              # 单架构或未知类型，使用详细inspect方式
+              local inspect_info
+              if ! inspect_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>/dev/null); then
+                log "ERROR" "无法获取镜像详细信息"
+                return 1
+              fi
 
-                variant=$(jq -r '.variant? // empty' <<< "$config_json")
-                result="${os}/${arch}$([ -n "$variant" ] && echo "/$variant")"
-                [[ "${os}/${arch}" == "unknown/unknown" ]] && result="unknown"
-                
-                log "INFO" "单架构镜像：${result}"
+              # 提取架构信息
+              local os
+              os=$(jq -r '.Os // "unknown"' <<< "$inspect_info")
+              local arch
+              arch=$(jq -r '.Architecture // "unknown"' <<< "$inspect_info")
+              local variant
+              variant=$(jq -r '.Variant? // ""' <<< "$inspect_info")
+              
+              # 处理无效架构组合
+              if [[ "$os" == "unknown" || "$arch" == "unknown" ]]; then
+                log "INFO" "单架构镜像：unknown"
+                echo "unknown"
+                return 0
+              fi
+
+              # 格式化输出
+              local result="${os}/${arch}"
+              [[ -n "$variant" ]] && result+="/${variant}"
+              
+              # Docker不同版本可能不同字段名，特殊处理
+              case "$arch" in
+                "arm64")
+                  result="linux/arm64/v8"
+                  ;;
+                "arm")
+                  [[ "$variant" == "v7" ]] && result="linux/arm/v7"
+                  ;;
+              esac
+
+              log "INFO" "单架构镜像：${result}"
+              # echo "$result"
             fi
           }
 
