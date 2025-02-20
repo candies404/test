@@ -152,11 +152,10 @@ jobs:
             
             if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src}" | jq -e '.manifests != null' &>/dev/null; then
               log "INFO" "使用多架构同步模式"
-              if ! docker buildx imagetools create -t "$dst" "$src" \
-                --registry-config $HOME/.docker/config.json; then
-                log "ERROR" "多架构同步失败"
-                return 1
-              fi
+              if ! docker buildx imagetools create -t "$dst" "$src"; then
+              log "ERROR" "多架构同步失败"
+              return 1
+            fi
             else
               log "INFO" "使用单架构同步模式"
               if ! docker pull --quiet "$src"; then
