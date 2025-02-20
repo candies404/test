@@ -79,11 +79,11 @@ jobs:
             esac
           }
 
-          # 镜像路径规范化（关键修改点）
+          # 镜像路径规范化
           normalize_image() {
             local image_ref=$1
             local default_tag=$2
-            local context=$3  # source | target
+            local context=$3
 
             # 分离名称和标签
             if [[ "$image_ref" == *":"* ]]; then
@@ -105,7 +105,7 @@ jobs:
                 fi
                 ;;
               "target")
-                # 目标镜像强制使用用户仓库
+                # 目标镜像使用用户仓库
                 printf "docker.io/%s/%s:%s" "$DEST_REPO" "$image_name" "$image_tag"
                 ;;
               *)
@@ -122,16 +122,21 @@ jobs:
             
             local manifest
             if ! manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>&1); then
-              log "ERROR" "无法获取镜像清单：${manifest}"
-              return 1
+                log "ERROR" "无法获取镜像清单：${manifest}"
+                return 1
             fi
 
             if jq -e '.manifests != null' <<< "$manifest" &>/dev/null; then
-              local arch_list=$(jq -r '[.manifests[].platform | 
-                "\(.os)/\(.architecture)\(if .variant then "/"+.variant else "" end)"
-              ] | unique | join(", ")' <<< "$manifest")
-              log "INFO" "检测到多架构镜像：${arch_list}"
-              echo "$arch_list"
+                local arch_list=$(jq -r '
+                [.manifests[].platform | 
+                    select(.os != "unknown" and .architecture != "unknown") |
+                    "\(.os)/\(.architecture)\(if .variant then "/"+.variant else "" end)"
+                ] | unique | join(", ")' <<< "$manifest")
+                
+                [[ -z "$arch_list" ]] && { log "ERROR" "没有找到有效的架构信息"; return 1; }
+                
+                log "INFO" "检测到多架构镜像：${arch_list}"
+                echo "$arch_list"
             else
               local os=$(jq -r '.Os // "unknown"' <<< "$manifest")
               local arch=$(jq -r '.Architecture // "unknown"' <<< "$manifest")
@@ -152,24 +157,11 @@ jobs:
             
             if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src}" | jq -e '.manifests != null' &>/dev/null; then
               log "INFO" "使用多架构同步模式"
-              if ! docker buildx imagetools create -t "$dst" "$src"; then
-              log "ERROR" "多架构同步失败"
-              return 1
-            fi
+              docker buildx imagetools create -t "$dst" "$src" || { log "ERROR" "多架构同步失败"; return 1; }
             else
-              log "INFO" "使用单架构同步模式"
-              if ! docker pull --quiet "$src"; then
-                log "ERROR" "镜像拉取失败"
-                return 1
-              fi
-              if ! docker tag "$src" "$dst"; then
-                log "ERROR" "镜像标签设置失败"
-                return 1
-              fi
-              if ! docker push --quiet "$dst"; then
-                log "ERROR" "镜像推送失败"
-                return 1
-              fi
+              docker pull --quiet "$src" || { log "ERROR" "镜像拉取失败"; return 1; }
+              docker tag "$src" "$dst" || { log "ERROR" "镜像标签设置失败"; return 1; }
+              docker push --quiet "$dst" || { log "ERROR" "镜像推送失败"; return 1; }
             fi
             log "INFO" "同步完成"
           }
@@ -193,37 +185,41 @@ jobs:
               exit 1
             fi
 
-            # 检查同步必要性
-            log "INFO" "计算镜像摘要"
-            src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://${src_image}")
+            # 获取目标镜像状态（新增关键点）
             if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${dst_image}" 2>/dev/null); then
-              dst_digest=$(jq -r '.Digest' <<< "$target_info")
-              if [[ "$src_digest" == "$dst_digest" ]]; then
-                log "INFO" "目标镜像已是最新版本，跳过同步"
-                echo "::endgroup::"
-                continue
-              fi
-              log "INFO" "发现差异：源摘要 ${src_digest:0:12}... vs 目标摘要 ${dst_digest:0:12}..."
+              dst_exists=true
             else
+              dst_exists=false
               log "WARN" "目标镜像不存在，将创建新镜像"
             fi
 
-            # 架构对比
+            # 架构分析（流程前置关键修改）
             log "INFO" "执行架构分析"
             src_arch=$(get_architecture "$src_image")
-            if [[ -n "$target_info" ]]; then
+            if $dst_exists; then
               dst_arch=$(get_architecture "$dst_image")
             else
               dst_arch="N/A"
             fi
 
-            # 输出架构对比
+            # 显示架构对比（新增重点）
             echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
             printf "%-40s → %-40s\n" "源架构" "目标架构"
             printf "%-40s │ %-40s\n" "$src_arch" "$dst_arch"
             echo
 
-            # 执行同步
+            # 检查同步必要性（逻辑优化）
+            log "INFO" "计算镜像摘要"
+            src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://${src_image}")
+            
+            if $dst_exists && [[ "$(jq -r '.Digest' <<< "$target_info")" == "$src_digest" ]]; then
+              log "INFO" "目标镜像已是最新版本，跳过同步"
+              echo "::endgroup::"
+              continue
+            fi
+
+            $dst_exists && log "INFO" "发现差异：源摘要 ${src_digest:0:12}... vs 目标摘要 ${dst_digest:0:12}..."
+
             if sync_image "$src_image" "$dst_image"; then
               log "INFO" "✅ 同步成功完成"
             else
