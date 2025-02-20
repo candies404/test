@@ -13,9 +13,11 @@ jobs:
 
     steps:
       - name: Setup build environment
+        # 设置 buildx 环境，支持多平台构建
         uses: docker/setup-buildx-action@v3
 
       - name: Install system dependencies
+        # 更新 apt 源并安装 skopeo（用于获取镜像信息）
         run: |
           sudo apt-get update && sudo apt-get install -y skopeo
 
@@ -26,18 +28,19 @@ jobs:
           password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Execute image synchronization
+        # 执行镜像同步及架构验证脚本
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
 
-          # 同步配置
+          # 定义同步配置，key 为源镜像，value 为目标镜像名称
           declare -A SYNC_MAP=(
             ['nginx']='nginx-m'
             ['redis:7.0']='redis:7'
             ['chipsman/uptime-kuma']='uptime-kuma-back'
           )
 
-          # 日志颜色定义
+          # 定义日志打印时使用的颜色
           readonly COLOR_RESET="\033[0m"
           readonly COLOR_SRC="\033[38;5;111m"
           readonly COLOR_DST="\033[38;5;213m"
@@ -45,104 +48,113 @@ jobs:
           readonly COLOR_OK="\033[38;5;121m"
           readonly COLOR_WARN="\033[38;5;223m"
           readonly COLOR_ERR="\033[38;5;203m"
+          readonly COLOR_BOX="\033[38;5;59m"
 
-          # 带时间戳的日志函数
+          # 带时间戳的日志打印函数，根据日志级别输出不同颜色信息
           log() {
-            local level=$1
-            local message=$2
+            local level=$1 message=$2
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            local color
             case $level in
-              "INFO") color="$COLOR_OK" ;;
-              "WARN") color="$COLOR_WARN" ;;
-              "ERROR") color="$COLOR_ERR" ;;
+              "INFO") echo -e "[$timestamp] \033[34mℹ${COLOR_RESET} ${message}" ;;
+              "WARN") echo -e "[$timestamp] \033[33m⚠${COLOR_RESET} ${message}" >&2 ;;
+              "ERROR") echo -e "[$timestamp] \033[31m✖${COLOR_RESET} ${message}" >&2 ;;
             esac
-            echo -e "${COLOR_HL}[${timestamp}] ${color}${level}:${COLOR_RESET} ${message}"
           }
 
-          format_arch_report() {
-            local src=$1
-            local dst=$2
-            local src_arch=$3
-            local dst_arch=$4
-            
-            echo -e "\n\033[38;5;117m▍ ▏ 架构对比 ${COLOR_RESET}"
-            printf "%-65s %65s\n" \
-              "${COLOR_SRC}➜ Source: ${src}${COLOR_RESET}" \
-              "${COLOR_DST}➜ Target: ${dst}${COLOR_RESET}"
-            echo -e "${COLOR_HL}┏$(printf '━%.0s' {1..38})┳$(printf '━%.0s' {1..38})┓"
-            printf "┃%-38s ┃ %-38s┃\n" \
-              "  ${COLOR_SRC}${src_arch}${COLOR_RESET}" \
-              "  ${COLOR_DST}${dst_arch}${COLOR_RESET}"
-            echo -e "┗$(printf '━%.0s' {1..38})┻$(printf '━%.0s' {1..38})┛${COLOR_RESET}"
+          # 格式化并打印源镜像与目标镜像的架构信息表格
+          format_arch_table() {
+            local src=$1 dst=$2 src_arch=$3 dst_arch=$4
+            term_width=$(tput cols 2>/dev/null || echo 120)
+            [[ $term_width -lt 90 ]] && term_width=90
+            col_width=$(((term_width-4)/2))
+
+            # 内部函数：将以逗号分隔的架构信息拆分成多行
+            split_columns() {
+              echo "$1" | sed 's/,/\n/g' | fold -sw $((col_width-6)) | sed 's/^/  /' | paste -sd'\n' -
+            }
+
+            mapfile src_lines < <(split_columns "$src_arch")
+            mapfile dst_lines < <(split_columns "$dst_arch")
+            max_lines=$(( ${#src_lines[@]} > ${#dst_lines[@]} ? ${#src_lines[@]} : ${#dst_lines[@]} ))
+
+            # 打印表格头部
+            echo -e "\n${COLOR_BOX}┌$(printf '─%.0s' $(seq 1 $col_width))┬$(printf '─%.0s' $(seq 1 $col_width))┐${COLOR_RESET}"
+            printf "${COLOR_BOX}│%-${col_width}s${COLOR_BOX}│%-${col_width}s│\n" \
+                   "  ${COLOR_SRC}Source: ${src}${COLOR_RESET}" \
+                   "  ${COLOR_DST}Target: ${dst}${COLOR_RESET}"
+            echo -e "${COLOR_BOX}├$(printf '─%.0s' $(seq 1 $col_width))┼$(printf '─%.0s' $(seq 1 $col_width))┤${COLOR_RESET}"
+
+            # 打印表格体，逐行显示架构信息
+            for ((i=0; i < max_lines; i++)); do
+              src_line="${src_lines[i]:-}"
+              dst_line="${dst_lines[i]:-}"
+              printf "${COLOR_BOX}│${COLOR_RESET}%-$((col_width))s${COLOR_BOX}│${COLOR_RESET}%-$((col_width))s${COLOR_BOX}│\n" \
+                     "  ${COLOR_SRC}${src_line}${COLOR_RESET}" \
+                     "  ${COLOR_DST}${dst_line}${COLOR_RESET}"
+            done
+
+            echo -e "${COLOR_BOX}└$(printf '─%.0s' $(seq 1 $col_width))┴$(printf '─%.0s' $(seq 1 $col_width))┘${COLOR_RESET}\n"
           }
 
+          # 获取指定镜像的架构信息，使用 docker buildx imagetools inspect 命令
           get_architecture() {
             local image=$1
-            local result=""
-            
-            if raw_manifest=$(skopeo inspect --raw "docker://${image}" 2>/dev/null); then
-              if jq -e '.manifests != null' <<< "$raw_manifest" &>/dev/null; then
-                result=$(jq -r '.manifests[].platform | "\(.os)/\(.architecture)"' <<< "$raw_manifest" | sort -u | tr '\n' ',')
-                result="${result%,}"
-              else
-                local os=$(jq -r '.Architecture' <<< "$(skopeo inspect "docker://${image}")")
-                local arch=$(jq -r '.Os' <<< "$(skopeo inspect "docker://${image}")")
-                result="${arch}/${os}"
-              fi
-            fi
-            [[ -z "$result" ]] && result="unknown"
-            echo "$result"
+            docker buildx imagetools inspect "$image" --format '
+            {{- range $manifest := .Manifest.Manifests -}}
+              {{- $platform := $manifest.Platform -}}
+              {{- printf "%s/%s" $platform.os $platform.architecture }}
+              {{- if $platform.variant }}@{{ $platform.variant }}{{end -}}
+              {{- if not (eq $manifest.Index 0) }}, {{end -}}
+            {{- end -}}' 2>/dev/null || echo "unknown"
           }
 
-          sync_image() {
-            local src=$1
-            local dst=$2
+          # 检查镜像的 digest 值，用于对比镜像内容
+          check_digest() {
+            skopeo inspect "docker://$1" --format '{{.Digest}}' 2>/dev/null || echo "none"
+          }
 
-            if docker buildx imagetools inspect "$src" | grep -q "Manifest list"; then
-              log "INFO" "🔁 使用多架构同步模式"
+          # 根据镜像类型（多架构或单架构）执行不同的同步方式
+          sync_image() {
+            local src=$1 dst=$2
+            if docker buildx imagetools inspect "$src" &>/dev/null; then
+              log "INFO" "${COLOR_OK}Syncing multi-arch image...${COLOR_RESET}"
+              # 对于多架构镜像，利用 buildx 创建多平台镜像
               docker buildx imagetools create -t "$dst" "$src"
             else
-              log "INFO" "⬇️ 拉取单架构镜像"
-              docker pull --quiet "$src"
-              docker tag "$src" "$dst"
-              docker push --quiet "$dst"
+              log "INFO" "${COLOR_OK}Pushing single-arch image...${COLOR_RESET}"
+              # 针对单架构镜像，先拉取，再打标签，最后推送
+              docker pull -q "$src" && docker tag "$src" "$dst" && docker push -q "$dst"
             fi
           }
 
+          # 遍历每个同步配置项，执行同步操作
           for source_ref in "${!SYNC_MAP[@]}"; do
             echo "::group::🔄 Processing ${source_ref}"
-            
+            # 构造源镜像和目标镜像的完整地址
             src_image="docker.io/${source_ref}"
             dst_image="docker.io/${DEST_REPO}/${SYNC_MAP[$source_ref]}"
-            
-            log "INFO" "🛫 开始同步流程"
-            log "INFO" "源镜像: ${COLOR_SRC}${src_image}${COLOR_RESET}"
-            log "INFO" "目标镜像: ${COLOR_DST}${dst_image}${COLOR_RESET}"
 
-            # 架构分析
-            log "INFO" "🔍 执行架构检查..."
+            log "INFO" "Starting sync: ${COLOR_SRC}${src_image}${COLOR_RESET} → ${COLOR_DST}${dst_image}${COLOR_RESET}"
+            
+            # 获取并显示源镜像与目标镜像的架构信息
             src_arch=$(get_architecture "$src_image")
-            dst_arch=$(get_architecture "$dst_image" 2>/dev/null || echo "<新镜像>")
-            
-            format_arch_report "$src_image" "$dst_image" "$src_arch" "$dst_arch"
+            dst_arch=$(get_architecture "$dst_image" || echo "<new-image>")
+            format_arch_table "$src_image" "$dst_image" "${src_arch}" "${dst_arch}"
 
-            # 摘要检查
-            src_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${src_image}")
-            dst_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${dst_image}" 2>/dev/null || echo "empty")
-
-            log "INFO" "🔖 摘要比对："
-            echo -e "${COLOR_SRC}  ${src_digest:0:12}...${src_digest: -4}${COLOR_RESET}"
-            echo -e "${COLOR_DST}  ${dst_digest:0:12}...${dst_digest: -4}${COLOR_RESET}"
-
+            # 获取镜像的 digest 值，用于版本匹配判断
+            src_digest=$(check_digest "$src_image")
+            dst_digest=$(check_digest "$dst_image")
             if [[ "$src_digest" == "$dst_digest" ]]; then
-              log "INFO" "✅ 无需同步：目标镜像已是最新版本"
+              log "INFO" "${COLOR_OK}Digests match:${COLOR_RESET} ${src_digest:0:12}...${src_digest: -6}"
+              log "INFO" "${COLOR_OK}Target is up-to-date, skipping sync${COLOR_RESET}"
             else
-              log "INFO" "🔄 发现更新：开始同步镜像"
+              log "INFO" "${COLOR_WARN}Digests differ:${COLOR_RESET}"
+              log "INFO" "Source: ${src_digest:0:12}...${src_digest: -6}"
+              log "INFO" "Target: ${dst_digest:0:12}...${dst_digest: -6}"
+              # 执行实际镜像同步操作
               sync_image "$src_image" "$dst_image"
-              log "INFO" "🎉 同步操作成功完成"
             fi
-
-            echo -e "${COLOR_HL}━${COLOR_RESET}"
+            
             echo "::endgroup::"
+            echo -e "\n"
           done
