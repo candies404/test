@@ -136,15 +136,33 @@ jobs:
                 [[ -z "$arch_list" ]] && { log "ERROR" "没有找到有效的架构信息"; return 1; }
                 
                 log "INFO" "检测到多架构镜像：${arch_list}"
-                echo "$arch_list"
+                # echo "$arch_list"
             else
-              local os=$(jq -r '.Os // "unknown"' <<< "$manifest")
-              local arch=$(jq -r '.Architecture // "unknown"' <<< "$manifest")
-              local variant=$(jq -r '.Variant? // ""' <<< "$manifest")
-              local result="${os}/${arch}${variant:+"/$variant"}"
-              [[ "$result" == "unknown/unknown" ]] && result="unknown"
-              log "INFO" "单架构镜像：${result}"
-              echo "$result"
+              # 新增架构信息解析逻辑
+                local schema_version=$(jq -r '.schemaVersion? // "1"' <<< "$manifest")
+                case $schema_version in
+                "1")
+                    os=$(jq -r '.os // "unknown"' <<< "$manifest")
+                    arch=$(jq -r '.architecture // "unknown"' <<< "$manifest")
+                    ;;
+                "2")
+                    config_digest=$(jq -r '.config.digest' <<< "$manifest")
+                    if [[ -n "$config_digest" && "$config_digest" != "null" ]]; then
+                    if config_json=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}@${config_digest}" 2>/dev/null); then
+                        os=$(jq -r '.os // empty' <<< "$config_json")
+                        arch=$(jq -r '.architecture // empty' <<< "$config_json")
+                    fi
+                    fi
+                    os=${os:-unknown}
+                    arch=${arch:-unknown}
+                    ;;
+                esac
+
+                variant=$(jq -r '.variant? // empty' <<< "$config_json")
+                result="${os}/${arch}$([ -n "$variant" ] && echo "/$variant")"
+                [[ "${os}/${arch}" == "unknown/unknown" ]] && result="unknown"
+                
+                log "INFO" "单架构镜像：${result}"
             fi
           }
 
