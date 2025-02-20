@@ -21,7 +21,7 @@ jobs:
       - name: Install system dependencies
         run: |
           echo "🛠️ Installing required tools..."
-          sudo apt-get update && sudo apt-get install -y skopeo jq
+          sudo apt-get update && sudo apt-get install -y skopeo
           echo "✅ Dependencies installed"
 
       - name: Configure Docker authentication
