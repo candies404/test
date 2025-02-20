@@ -160,7 +160,7 @@ jobs:
                   ;;
               esac
               log "INFO" "单架构镜像：${result}"
-              # echo "$result"
+              echo "$result"
             fi
           }
 
