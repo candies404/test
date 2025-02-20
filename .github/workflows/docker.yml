@@ -13,148 +13,231 @@ jobs:
 
     steps:
       - name: Setup build environment
-        # 设置 buildx 环境，支持多平台构建
         uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+          driver-opts: network=host
 
       - name: Install system dependencies
-        # 更新 apt 源并安装 skopeo（用于获取镜像信息）
         run: |
+          echo "🛠️ Installing required tools..."
           sudo apt-get update && sudo apt-get install -y skopeo
+          echo "✅ Dependencies installed"
+      # - name: Configure Docker authentication
+      #   run: |
+      #     mkdir -p $HOME/.docker
+      #     auth_token=$(echo -n "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" | base64 -w 0)
+      #     cat > $HOME/.docker/config.json <<EOF
+      #     {
+      #       "auths": {
+      #         "https://index.docker.io/v1/": {
+      #           "auth": "${auth_token}"
+      #         }
+      #       }
+      #     }
+      #     EOF
+      #     echo "🔐 Docker authentication configured"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ env.DOCKERHUB_USER }}
           password: ${{ env.DOCKERHUB_TOKEN }}
+        env:
+          DOCKER_REGISTRY: index.docker.io
 
       - name: Execute image synchronization
-        # 执行镜像同步及架构验证脚本
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
-
-          # 定义同步配置，key 为源镜像，value 为目标镜像名称
+          # 同步配置
           declare -A SYNC_MAP=(
             ['nginx']='nginx-m'
             ['redis:7.0']='redis:7'
             ['chipsman/uptime-kuma']='uptime-kuma-back'
           )
-
-          # 定义日志打印时使用的颜色
+          # 日志颜色定义
           readonly COLOR_RESET="\033[0m"
-          readonly COLOR_SRC="\033[38;5;111m"
-          readonly COLOR_DST="\033[38;5;213m"
-          readonly COLOR_HL="\033[38;5;223m"
-          readonly COLOR_OK="\033[38;5;121m"
-          readonly COLOR_WARN="\033[38;5;223m"
-          readonly COLOR_ERR="\033[38;5;203m"
-          readonly COLOR_BOX="\033[38;5;59m"
-
-          # 带时间戳的日志打印函数，根据日志级别输出不同颜色信息
+          readonly COLOR_SRC="\033[1;34m"
+          readonly COLOR_DST="\033[1;35m"
+          readonly COLOR_OK="\033[1;32m"
+          readonly COLOR_WARN="\033[1;33m"
+          readonly COLOR_ERR="\033[1;31m"
+          # 带时间戳的日志函数
           log() {
-            local level=$1 message=$2
+            local level=$1
+            local message=$2
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             case $level in
-              "INFO") echo -e "[$timestamp] \033[34mℹ${COLOR_RESET} ${message}" ;;
-              "WARN") echo -e "[$timestamp] \033[33m⚠${COLOR_RESET} ${message}" >&2 ;;
-              "ERROR") echo -e "[$timestamp] \033[31m✖${COLOR_RESET} ${message}" >&2 ;;
+              "INFO")
+                echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}"
+                ;;
+              "WARN")
+                echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2
+                ;;
+              "ERROR")
+                echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2
+                ;;
             esac
           }
-
-          # 格式化并打印源镜像与目标镜像的架构信息表格
-          format_arch_table() {
-            local src=$1 dst=$2 src_arch=$3 dst_arch=$4
-            term_width=$(tput cols 2>/dev/null || echo 120)
-            [[ $term_width -lt 90 ]] && term_width=90
-            col_width=$(((term_width-4)/2))
-
-            # 内部函数：将以逗号分隔的架构信息拆分成多行
-            split_columns() {
-              echo "$1" | sed 's/,/\n/g' | fold -sw $((col_width-6)) | sed 's/^/  /' | paste -sd'\n' -
-            }
-
-            mapfile src_lines < <(split_columns "$src_arch")
-            mapfile dst_lines < <(split_columns "$dst_arch")
-            max_lines=$(( ${#src_lines[@]} > ${#dst_lines[@]} ? ${#src_lines[@]} : ${#dst_lines[@]} ))
-
-            # 打印表格头部
-            echo -e "\n${COLOR_BOX}┌$(printf '─%.0s' $(seq 1 $col_width))┬$(printf '─%.0s' $(seq 1 $col_width))┐${COLOR_RESET}"
-            printf "${COLOR_BOX}│%-${col_width}s${COLOR_BOX}│%-${col_width}s│\n" \
-                   "  ${COLOR_SRC}Source: ${src}${COLOR_RESET}" \
-                   "  ${COLOR_DST}Target: ${dst}${COLOR_RESET}"
-            echo -e "${COLOR_BOX}├$(printf '─%.0s' $(seq 1 $col_width))┼$(printf '─%.0s' $(seq 1 $col_width))┤${COLOR_RESET}"
-
-            # 打印表格体，逐行显示架构信息
-            for ((i=0; i < max_lines; i++)); do
-              src_line="${src_lines[i]:-}"
-              dst_line="${dst_lines[i]:-}"
-              printf "${COLOR_BOX}│${COLOR_RESET}%-$((col_width))s${COLOR_BOX}│${COLOR_RESET}%-$((col_width))s${COLOR_BOX}│\n" \
-                     "  ${COLOR_SRC}${src_line}${COLOR_RESET}" \
-                     "  ${COLOR_DST}${dst_line}${COLOR_RESET}"
-            done
-
-            echo -e "${COLOR_BOX}└$(printf '─%.0s' $(seq 1 $col_width))┴$(printf '─%.0s' $(seq 1 $col_width))┘${COLOR_RESET}\n"
+          # 镜像路径规范化
+          normalize_image() {
+            local image_ref=$1
+            local default_tag=$2
+            local context=$3
+            # 分离名称和标签
+            if [[ "$image_ref" == *":"* ]]; then
+              local image_name="${image_ref%:*}"
+              local image_tag="${image_ref#*:}"
+            else
+              local image_name="$image_ref"
+              local image_tag="$default_tag"
+            fi
+            # 处理不同场景
+            case $context in
+              "source")
+                # 源镜像保留library/前缀
+                if [[ "$image_name" == *"/"* ]]; then
+                  printf "docker.io/%s:%s" "$image_name" "$image_tag"
+                else
+                  printf "docker.io/library/%s:%s" "$image_name" "$image_tag"
+                fi
+                ;;
+              "target")
+                # 目标镜像使用用户仓库
+                printf "docker.io/%s/%s:%s" "$DEST_REPO" "$image_name" "$image_tag"
+                ;;
+              *)
+                log "ERROR" "无效的上下文参数: $context"
+                exit 1
+                ;;
+            esac
           }
-
-          # 获取指定镜像的架构信息，使用 docker buildx imagetools inspect 命令
+          # 架构信息获取
           get_architecture() {
             local image=$1
-            docker buildx imagetools inspect "$image" --format '
-            {{- range $manifest := .Manifest.Manifests -}}
-              {{- $platform := $manifest.Platform -}}
-              {{- printf "%s/%s" $platform.os $platform.architecture }}
-              {{- if $platform.variant }}@{{ $platform.variant }}{{end -}}
-              {{- if not (eq $manifest.Index 0) }}, {{end -}}
-            {{- end -}}' 2>/dev/null || echo "unknown"
-          }
-
-          # 检查镜像的 digest 值，用于对比镜像内容
-          check_digest() {
-            skopeo inspect "docker://$1" --format '{{.Digest}}' 2>/dev/null || echo "none"
-          }
-
-          # 根据镜像类型（多架构或单架构）执行不同的同步方式
-          sync_image() {
-            local src=$1 dst=$2
-            if docker buildx imagetools inspect "$src" &>/dev/null; then
-              log "INFO" "${COLOR_OK}Syncing multi-arch image...${COLOR_RESET}"
-              # 对于多架构镜像，利用 buildx 创建多平台镜像
-              docker buildx imagetools create -t "$dst" "$src"
+            log "INFO" "获取架构信息：${COLOR_SRC}${image}${COLOR_RESET}"
+            
+            # 先尝试检查是否是多架构镜像
+            if raw_manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>&1) &&
+              jq -e '.manifests != null and (.mediaType | contains("manifest.list"))' <<< "$raw_manifest" &>/dev/null; then
+              
+              # 处理多架构镜像
+              local arch_list
+              arch_list=$(jq -r '
+                [.manifests[].platform |
+                  select(.os != "unknown" and .architecture != "unknown") |
+                  "\(.os)/\(.architecture)\(if .variant and .variant != "" then "/"+.variant else "" end)"
+                ] | unique | join(", ")' <<< "$raw_manifest")
+              
+              [[ -z "$arch_list" ]] && { log "ERROR" "没有找到有效的架构信息"; return 1; }
+              log "INFO" "检测到多架构镜像：${arch_list// /,}"
+              echo "$arch_list"
+              return 0
             else
-              log "INFO" "${COLOR_OK}Pushing single-arch image...${COLOR_RESET}"
-              # 针对单架构镜像，先拉取，再打标签，最后推送
-              docker pull -q "$src" && docker tag "$src" "$dst" && docker push -q "$dst"
+              # 单架构或未知类型，使用详细inspect方式
+              local inspect_info
+              if ! inspect_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>/dev/null); then
+                log "ERROR" "无法获取镜像详细信息"
+                return 1
+              fi
+              # 提取架构信息
+              local os
+              os=$(jq -r '.Os // "unknown"' <<< "$inspect_info")
+              local arch
+              arch=$(jq -r '.Architecture // "unknown"' <<< "$inspect_info")
+              local variant
+              variant=$(jq -r '.Variant? // ""' <<< "$inspect_info")
+              
+              # 处理无效架构组合
+              if [[ "$os" == "unknown" || "$arch" == "unknown" ]]; then
+                log "INFO" "单架构镜像：unknown"
+                echo "unknown"
+                return 0
+              fi
+              # 格式化输出
+              local result="${os}/${arch}"
+              [[ -n "$variant" ]] && result+="/${variant}"
+              
+              # Docker不同版本可能不同字段名，特殊处理
+              case "$arch" in
+                "arm64")
+                  result="linux/arm64/v8"
+                  ;;
+                "arm")
+                  [[ "$variant" == "v7" ]] && result="linux/arm/v7"
+                  ;;
+              esac
+              log "INFO" "单架构镜像：${result}"
+              # echo "$result"
             fi
           }
-
-          # 遍历每个同步配置项，执行同步操作
+          # 镜像同步执行
+          sync_image() {
+            local src=$1
+            local dst=$2
+            log "INFO" "启动同步：${COLOR_SRC}${src}${COLOR_RESET} → ${COLOR_DST}${dst}${COLOR_RESET}"
+            
+            if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src}" | jq -e '.manifests != null' &>/dev/null; then
+              log "INFO" "使用多架构同步模式"
+              docker buildx imagetools create -t "$dst" "$src" || { log "ERROR" "多架构同步失败"; return 1; }
+            else
+              docker pull --quiet "$src" || { log "ERROR" "镜像拉取失败"; return 1; }
+              docker tag "$src" "$dst" || { log "ERROR" "镜像标签设置失败"; return 1; }
+              docker push --quiet "$dst" || { log "ERROR" "镜像推送失败"; return 1; }
+            fi
+            log "INFO" "同步完成"
+          }
+          # 主执行流程
           for source_ref in "${!SYNC_MAP[@]}"; do
             echo "::group::🔄 Processing ${source_ref}"
-            # 构造源镜像和目标镜像的完整地址
-            src_image="docker.io/${source_ref}"
-            dst_image="docker.io/${DEST_REPO}/${SYNC_MAP[$source_ref]}"
-
-            log "INFO" "Starting sync: ${COLOR_SRC}${src_image}${COLOR_RESET} → ${COLOR_DST}${dst_image}${COLOR_RESET}"
-            
-            # 获取并显示源镜像与目标镜像的架构信息
-            src_arch=$(get_architecture "$src_image")
-            dst_arch=$(get_architecture "$dst_image" || echo "<new-image>")
-            format_arch_table "$src_image" "$dst_image" "${src_arch}" "${dst_arch}"
-
-            # 获取镜像的 digest 值，用于版本匹配判断
-            src_digest=$(check_digest "$src_image")
-            dst_digest=$(check_digest "$dst_image")
-            if [[ "$src_digest" == "$dst_digest" ]]; then
-              log "INFO" "${COLOR_OK}Digests match:${COLOR_RESET} ${src_digest:0:12}...${src_digest: -6}"
-              log "INFO" "${COLOR_OK}Target is up-to-date, skipping sync${COLOR_RESET}"
-            else
-              log "INFO" "${COLOR_WARN}Digests differ:${COLOR_RESET}"
-              log "INFO" "Source: ${src_digest:0:12}...${src_digest: -6}"
-              log "INFO" "Target: ${dst_digest:0:12}...${dst_digest: -6}"
-              # 执行实际镜像同步操作
-              sync_image "$src_image" "$dst_image"
+            # 规范化镜像地址
+            src_image=$(normalize_image "$source_ref" "latest" "source")
+            dst_ref="${SYNC_MAP[$source_ref]}"
+            dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
+            log "INFO" "源镜像地址: ${COLOR_SRC}${src_image}${COLOR_RESET}"
+            log "INFO" "目标镜像地址: ${COLOR_DST}${dst_image}${COLOR_RESET}"
+            # 验证源镜像
+            log "INFO" "验证源镜像可访问性"
+            if ! skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src_image}" >/dev/null; then
+              log "ERROR" "源镜像不可访问：${src_image}"
+              exit 1
             fi
+            # 获取目标镜像状态（新增关键点）
+            if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${dst_image}" 2>/dev/null); then
+              dst_exists=true
+            else
+              dst_exists=false
+              log "WARN" "目标镜像不存在，将创建新镜像"
+            fi
+            # 架构分析（流程前置关键修改）
+            log "INFO" "执行架构分析"
+            src_arch=$(get_architecture "$src_image")
+            if $dst_exists; then
+              dst_arch=$(get_architecture "$dst_image")
+            else
+              dst_arch="N/A"
+            fi
+            # 显示架构对比（新增重点）
+            echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
+            printf "%-40s → %-40s\n" "源架构" "目标架构"
+            printf "%-40s │ %-40s\n" "$src_arch" "$dst_arch"
+            echo
+            # 检查同步必要性（逻辑优化）
+            log "INFO" "计算镜像摘要"
+            src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://${src_image}")
             
+            if $dst_exists && [[ "$(jq -r '.Digest' <<< "$target_info")" == "$src_digest" ]]; then
+              log "INFO" "目标镜像已是最新版本，跳过同步"
+              echo "::endgroup::"
+              continue
+            fi
+            $dst_exists && log "INFO" "发现差异：源摘要 ${src_digest:0:12}... vs 目标摘要 ${dst_digest:0:12}..."
+            if sync_image "$src_image" "$dst_image"; then
+              log "INFO" "✅ 同步成功完成"
+            else
+              log "ERROR" "❌ 同步过程中发生错误"
+              exit 1
+            fi
             echo "::endgroup::"
-            echo -e "\n"
           done
