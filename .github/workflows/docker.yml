@@ -2,6 +2,10 @@ name: Image Sync with Architecture Validation
 
 on:
   workflow_dispatch:
+    inputs:
+      mappings:
+        description: '镜像同步映射（格式：源镜像=目标镜像，多个用逗号分隔）'
+        required: false
 
 jobs:
   image-sync:
@@ -10,11 +14,39 @@ jobs:
       DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       DEST_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
-      # 新增环境变量↓ 抑制构建工具的输出
       BUILDKIT_PROGRESS: plain
       DOCKER_CLI_EXPERIMENTAL: enabled
 
     steps:
+      # 新增配置解析步骤
+      - name: Configure sync mappings
+        id: config
+        run: |
+          # 优先使用手动输入，否则使用仓库变量
+          if [[ -n '${{ github.event.inputs.mappings }}' ]]; then
+            echo "SYNC_SOURCE=manual" >> $GITHUB_ENV
+            echo "DOCKER_SYNC_MAPPINGS='${{ github.event.inputs.mappings }}'" >> $GITHUB_ENV
+          else
+            echo "SYNC_SOURCE=repository" >> $GITHUB_ENV
+            echo "DOCKER_SYNC_MAPPINGS='${{ vars.DOCKER_SYNC_MAPPINGS }}'" >> $GITHUB_ENV
+          fi
+
+      # 前置校验步骤
+      - name: Validate mappings configuration
+        run: |
+          if [[ -z "$DOCKER_SYNC_MAPPINGS" ]]; then
+            echo "::error::[配置检查] 未找到同步配置，来源：$SYNC_SOURCE"
+            echo "请通过以下方式之一提供配置："
+            echo "1. 手动触发时输入 mappings 参数"
+            echo "2. 在仓库变量中设置 DOCKER_SYNC_MAPPINGS"
+            exit 1
+          fi
+
+          if [[ "$DOCKER_SYNC_MAPPINGS" =~ ^[[:space:],]*$ ]]; then
+            echo "::error::[配置检查] 无效的空白配置，来源：$SYNC_SOURCE"
+            exit 1
+          fi
+
       - name: Setup build environment
         uses: docker/setup-buildx-action@v3
         with:
@@ -40,12 +72,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          declare -A SYNC_MAP=(
-            ['nginx']='nginx-m'
-            ['redis:7.0']='redis:7'
-            ['chipsman/uptime-kuma']='uptime-kuma-back'
-          )
-
+          # 颜色定义保持不变
           readonly COLOR_RESET="\033[0m"
           readonly COLOR_SRC="\033[1;34m"
           readonly COLOR_DST="\033[1;35m"
@@ -53,6 +80,7 @@ jobs:
           readonly COLOR_WARN="\033[1;33m"
           readonly COLOR_ERR="\033[1;31m"
 
+          # 日志函数
           log() {
             local level=$1
             local message=$2
@@ -63,6 +91,51 @@ jobs:
               "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2 ;;
             esac
           }
+
+          # 配置解析逻辑
+          log "INFO" "开始解析同步配置（来源：$SYNC_SOURCE）"
+          declare -A SYNC_MAP
+
+          # 预处理输入数据
+          cleaned_input=$(
+            echo "$DOCKER_SYNC_MAPPINGS" \
+            | tr '\n' ','                  `# 换行转逗号` \
+            | tr -s ','                    `# 合并重复逗号` \
+            | sed -e 's/^,//' -e 's/,$//'  `# 去除首尾逗号`
+          )
+
+          IFS=',' read -ra entries <<< "$cleaned_input"
+          valid_count=0
+
+          for entry in "${entries[@]}"; do
+            IFS='=' read -r key value <<< "$entry"
+            key=$(echo "$key" | xargs)       # 去除前后空格
+            value=$(echo "$value" | xargs)
+
+            if [[ -z "$key" || -z "$value" ]]; then
+              log "WARN" "忽略无效条目: '$entry'"
+              continue
+            fi
+
+            if [[ "$key" =~ : ]]; then
+              src_tag="${key#*:}"
+              if [[ "$src_tag" =~ [/\\] ]]; then
+                log "WARN" "条目格式错误: '$entry'（包含非法字符）"
+                continue
+              fi
+            fi
+
+            SYNC_MAP["$key"]="$value"
+            ((valid_count++))
+            log "INFO" "成功解析: ${COLOR_SRC}${key}${COLOR_RESET} → ${COLOR_DST}${value}${COLOR_RESET}"
+          done
+
+          # 映射有效性检查
+          if [[ $valid_count -eq 0 ]]; then
+            log "ERROR" "没有有效的同步配置项"
+            log "ERROR" "原始输入内容：'$DOCKER_SYNC_MAPPINGS'"
+            exit 1
+          fi
 
           normalize_image() {
             local image_ref=$1 default_tag=$2 context=$3
@@ -145,6 +218,8 @@ jobs:
             log "INFO" "同步完成"
           }
 
+
+          # 处理同步循环
           for source_ref in "${!SYNC_MAP[@]}"; do
             echo "::group::🔄 Processing $source_ref"
             src_image=$(normalize_image "$source_ref" "latest" "source")
