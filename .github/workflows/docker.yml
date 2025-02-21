@@ -163,9 +163,9 @@ jobs:
 
             echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
             # 使用 column 格式化输出 ↓
-            paste <(echo "源架构" "$src_arch") <(echo "目标架构" "$dst_arch") | 
-            column -t -s $'\t' -o " │ "
-            echo
+            # paste <(echo "源架构" "$src_arch") <(echo "目标架构" "$dst_arch") | 
+            # column -t -s $'\t' -o " │ "
+            # echo
 
             src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://$src_image")
             if $dst_exists && [[ "$(jq -r '.Digest' <<< "$target_info")" == "$src_digest" ]]; then
