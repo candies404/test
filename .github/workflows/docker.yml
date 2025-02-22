@@ -192,6 +192,7 @@ jobs:
             src_image=$(normalize_image "$source_ref" "latest" "source")
             dst_ref="${SYNC_MAP[$source_ref]}"
             dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
+            echo "调试目标镜像路径：$dst_image"
 
             # 新增输出过滤 ↓ 确保捕获正确架构信息
             src_arch=$(get_architecture "$src_image" | tail -1)
