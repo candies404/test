@@ -83,7 +83,8 @@ jobs:
           log() {
             local level=$1
             local message=$2
-            local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            local timestamp
+            timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             case $level in
               "INFO") echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" >&2 ;;
               "WARN") echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2 ;;
@@ -106,20 +107,35 @@ jobs:
 
           normalize_image() {
             local image_ref=$1 default_tag=$2 context=$3
+            local image_name image_tag
+
             if [[ "$image_ref" == *":"* ]]; then
-              local image_name="${image_ref%:*}" image_tag="${image_ref#*:}"
+              image_name="${image_ref%:*}"
+              image_tag="${image_ref#*:}"
             else
-              local image_name="$image_ref" image_tag="$default_tag"
+              image_name="$image_ref"
+              image_tag="$default_tag"
             fi
+
             case $context in
-              "source") 
+              "source")
                 if [[ "$image_name" == *"/"* ]]; then
                   printf "docker.io/%s:%s" "$image_name" "$image_tag"
                 else
                   printf "docker.io/library/%s:%s" "$image_name" "$image_tag"
-                fi ;;
-              "target") printf "docker.io/%s/%s:%s" "$DEST_REPO" "$image_name" "$image_tag" ;;
-              *) log "ERROR" "无效上下文参数: $context"; exit 1 ;;
+                fi
+                ;;
+              "target")
+                if [[ "$image_name" == *"/"* ]]; then
+                  printf "docker.io/%s:%s" "$image_name" "$image_tag"
+                else
+                  printf "docker.io/%s/%s:%s" "$DEST_REPO" "$image_name" "$image_tag"
+                fi
+                ;;
+              *)
+                log "ERROR" "无效上下文参数: $context"
+                exit 1
+                ;;
             esac
           }
 
@@ -132,9 +148,9 @@ jobs:
             # 新条件：仅检查是否存在 manifests 数组
             if raw_manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>&1) &&
               jq -e '.manifests != null' <<< "$raw_manifest" &>/dev/null; then
-            # ================== 修正完成 ====================
-
-              local arch_list=$(jq -r '
+              # ================== 修正完成 ====================
+              local arch_list
+              arch_list=$(jq -r '
                 [.manifests[].platform |
                   select(.os != "unknown" and .architecture != "unknown") |
                   "\(.os)/\(.architecture)\(if .variant != "" then "/"+.variant else "" end)"
@@ -145,21 +161,27 @@ jobs:
               echo "$arch_list"
               return 0
             else
-              local inspect_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>/dev/null)
-              local os=$(jq -r '.Os // "unknown"' <<< "$inspect_info")
-              local arch=$(jq -r '.Architecture // "unknown"' <<< "$inspect_info")
-              local variant=$(jq -r '.Variant? // ""' <<< "$inspect_info")
+              local inspect_info os arch variant
+              inspect_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>/dev/null)
+              os=$(jq -r '.Os // "unknown"' <<< "$inspect_info")
+              arch=$(jq -r '.Architecture // "unknown"' <<< "$inspect_info")
+              variant=$(jq -r '.Variant? // ""' <<< "$inspect_info")
 
               [[ "$os" == "unknown" || "$arch" == "unknown" ]] && {
                 log "INFO" "单架构镜像：unknown"
-                echo "unknown"; return 0
+                echo "unknown"
+                return 0
               }
 
               local result="${os}/${arch}"
               [[ -n "$variant" ]] && result+="/$variant"
               case "$arch" in
-                "arm64") result="linux/arm64/v8" ;;
-                "arm") [[ "$variant" == "v7" ]] && result="linux/arm/v7" ;;
+                "arm64")
+                  result="linux/arm64/v8"
+                  ;;
+                "arm")
+                  [[ "$variant" == "v7" ]] && result="linux/arm/v7"
+                  ;;
               esac
               log "INFO" "单架构镜像：$result"
               echo "$result"
@@ -171,11 +193,11 @@ jobs:
             log "INFO" "启动同步：${COLOR_SRC}$src${COLOR_RESET} → ${COLOR_DST}$dst${COLOR_RESET}"
             
             # 同步模式判断联动修复
-            if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$src" |
-               jq -e '.manifests != null' &>/dev/null; then
+            if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$src" | jq -e '.manifests != null' &>/dev/null; then
               log "INFO" "使用多架构同步模式"
               docker buildx imagetools create -t "$dst" "$src" || {
-                log "ERROR" "多架构同步失败"; return 1
+                log "ERROR" "多架构同步失败"
+                return 1
               }
             else
               docker pull --quiet "$src" || { log "ERROR" "镜像拉取失败"; return 1; }
@@ -184,7 +206,6 @@ jobs:
             fi
             log "INFO" "同步完成"
           }
-
 
           # 处理同步循环
           for source_ref in "${!SYNC_MAP[@]}"; do
