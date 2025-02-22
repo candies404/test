@@ -3,7 +3,7 @@ name: Image Sync with Architecture Validation
 on:
   workflow_dispatch:
     inputs:
-      mappings:
+      sync_mappings:
         description: '镜像同步映射（格式：源镜像=目标镜像，多个用逗号分隔）'
         required: false
 
@@ -14,38 +14,37 @@ jobs:
       DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       DEST_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKER_SYNC_MAPPINGS: ${{ vars.DOCKER_SYNC_MAPPINGS }}
       BUILDKIT_PROGRESS: plain
       DOCKER_CLI_EXPERIMENTAL: enabled
 
     steps:
-      # 新增配置解析步骤
-      - name: Configure sync mappings
-        id: config
+      - name: Validate sync mappings
+        id: validate-mappings
         run: |
-          # 优先使用手动输入，否则使用仓库变量
-          if [[ -n '${{ github.event.inputs.mappings }}' ]]; then
-            # 安全处理输入参数（去除外围单引号）
-            cleaned_input=$(echo '${{ github.event.inputs.mappings }}' | sed "s/^['\"]//;s/['\"]$//")
-            echo "SYNC_SOURCE=manual" >> $GITHUB_ENV
-            echo "DOCKER_SYNC_MAPPINGS=${cleaned_input}" >> $GITHUB_ENV
+          # 优先使用手动输入
+          if [ -n "${{ github.event.inputs.sync_mappings }}" ]; then
+            echo "使用手动输入的同步映射"
+            PROCESSED_MAPPINGS="${{ github.event.inputs.sync_mappings }}"
           else
-            # 安全处理仓库变量（去除外围单引号）
-            cleaned_var=$(echo '${{ vars.DOCKER_SYNC_MAPPINGS }}' | sed "s/^['\"]//;s/['\"]$//")
-            echo "SYNC_SOURCE=repository" >> $GITHUB_ENV
-            echo "DOCKER_SYNC_MAPPINGS=${cleaned_var}" >> $GITHUB_ENV
+            echo "使用环境变量中的同步映射"
+            PROCESSED_MAPPINGS="$DOCKER_SYNC_MAPPINGS"
           fi
 
-      # 前置校验步骤
-      - name: Validate mappings configuration
-        run: |
-          if [[ -z "$DOCKER_SYNC_MAPPINGS" || "$DOCKER_SYNC_MAPPINGS" =~ ^[[:space:],]*$ ]]; then
-            echo "::error::[配置检查] 无效配置，来源：$SYNC_SOURCE"
-            echo "请通过以下方式提供有效配置："
-            echo "1. 手动触发时输入 mappings 参数"
-            echo "2. 在仓库变量中设置 DOCKER_SYNC_MAPPINGS"
+          # 清理特殊字符并校验格式
+          CLEAN_MAPPINGS=$(echo "$PROCESSED_MAPPINGS" | tr -d '\n' | tr -s ' ' | sed -e 's/ //g' -e 's/,+/,/g')
+          if [ -z "$CLEAN_MAPPINGS" ]; then
+            echo "::error::未配置同步映射，请设置DOCKER_SYNC_MAPPINGS环境变量或手动输入"
             exit 1
           fi
-          echo "有效配置内容: [${DOCKER_SYNC_MAPPINGS}]"
+
+          # 验证至少包含一个有效映射对
+          if ! grep -qE '^([^=]+=[^=]+)(,[^=]+=[^=]+)*$' <<< "$CLEAN_MAPPINGS"; then
+            echo "::error::无效的映射格式，请使用'src=dst,src2=dst2'格式"
+            exit 1
+          fi
+
+          echo "SYNC_MAPPINGS=${CLEAN_MAPPINGS}" >> $GITHUB_ENV
 
       - name: Setup build environment
         uses: docker/setup-buildx-action@v3
@@ -86,75 +85,24 @@ jobs:
             local message=$2
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             case $level in
-              "INFO") echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" ;;
-              "WARN") echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" ;;
-              "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" ;;
+              "INFO") echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" >&2 ;;
+              "WARN") echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2 ;;
+              "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2 ;;
             esac
           }
 
-          # 字符串清理函数
-          trim_string() {
-            local str="$*"
-            str="${str#"${str%%[![:space:]]*}"}"  # 移除前导空格
-            str="${str%"${str##*[![:space:]]}"}"  # 移除尾部空格
-            echo -n "$str"
-          }
-
-          # 配置解析逻辑
-          log "INFO" "开始解析同步配置（来源：$SYNC_SOURCE）"
-          declare -A SYNC_MAP
-
-          # 数据预处理
-          cleaned_input=$(
-            echo "$DOCKER_SYNC_MAPPINGS" \
-            | tr '\n' ','                 `# 换行符转逗号` \
-            | sed 's/,+/,/g'              `# 合并连续逗号` \
-            | sed -e 's/^,*//' -e 's/,*$//'  # 去除首尾逗号
-          )
-
-          IFS=',' read -ra entries <<< "$cleaned_input"
-          valid_count=0
-
-          for entry in "${entries[@]}"; do
-            entry=$(trim_string "$entry")
-            if [[ -z "$entry" ]]; then continue; fi
-
-            IFS='=' read -r key value <<< "$entry"
-            key=$(trim_string "$key")
-            value=$(trim_string "$value")
-
-            # 键值对非空校验
+          # 解析环境变量到关联数组
+          declare -A SYNC_MAP=()
+          IFS=',' read -ra MAPPING_PAIRS <<< "$SYNC_MAPPINGS"
+          for pair in "${MAPPING_PAIRS[@]}"; do
+            key="${pair%%=*}"
+            value="${pair#*=}"
             if [[ -z "$key" || -z "$value" ]]; then
-              log "WARN" "忽略无效条目: '${entry}'"
-              continue
+              log "ERROR" "无效的映射对: $pair"
+              exit 1
             fi
-
-            # 源镜像标签校验
-            if [[ "$key" =~ : ]]; then
-              src_tag="${key#*:}"
-              if [[ "$src_tag" =~ [/\\\'\"] ]]; then
-                log "WARN" "条目包含非法字符: '${entry}'"
-                continue
-              fi
-            fi
-
-            # 高危字符过滤（守护代码安全）
-            if [[ "$key" =~ [\'\"\\] ]] || [[ "$value" =~ [\'\"\\] ]]; then
-              log "WARN" "检测到危险字符，跳过条目: '${entry}'"
-              continue
-            fi
-
             SYNC_MAP["$key"]="$value"
-            ((valid_count++))
-            log "INFO" "有效映射: ${COLOR_SRC}${key}${COLOR_RESET} → ${COLOR_DST}${value}${COLOR_RESET}"
           done
-
-          # 最终有效性检查
-          if [[ $valid_count -eq 0 ]]; then
-            log "ERROR" "没有有效同步条目"
-            echo "原始输入内容 → [$DOCKER_SYNC_MAPPINGS]"
-            exit 1
-          fi
 
           normalize_image() {
             local image_ref=$1 default_tag=$2 context=$3
@@ -244,7 +192,7 @@ jobs:
             src_image=$(normalize_image "$source_ref" "latest" "source")
             dst_ref="${SYNC_MAP[$source_ref]}"
             dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
-            
+
             # 新增输出过滤 ↓ 确保捕获正确架构信息
             src_arch=$(get_architecture "$src_image" | tail -1)
             if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$dst_image" 2>/dev/null); then
