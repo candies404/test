@@ -214,6 +214,8 @@ jobs:
             dst_ref="${SYNC_MAP[$source_ref]}"
             dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
 
+            echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
+
             # 新增输出过滤 ↓ 确保捕获正确架构信息
             src_arch=$(get_architecture "$src_image" | tail -1)
             if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$dst_image" 2>/dev/null); then
@@ -224,7 +226,7 @@ jobs:
               dst_exists=false
             fi
 
-            echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
+            # echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
             # 使用 column 格式化输出 ↓
             # paste <(echo "源架构" "$src_arch") <(echo "目标架构" "$dst_arch") | 
             # column -t -s $'\t' -o " │ "
