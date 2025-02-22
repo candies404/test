@@ -24,28 +24,28 @@ jobs:
         run: |
           # 优先使用手动输入，否则使用仓库变量
           if [[ -n '${{ github.event.inputs.mappings }}' ]]; then
+            # 安全处理输入参数（去除外围单引号）
+            cleaned_input=$(echo '${{ github.event.inputs.mappings }}' | sed "s/^['\"]//;s/['\"]$//")
             echo "SYNC_SOURCE=manual" >> $GITHUB_ENV
-            echo "DOCKER_SYNC_MAPPINGS='${{ github.event.inputs.mappings }}'" >> $GITHUB_ENV
+            echo "DOCKER_SYNC_MAPPINGS=${cleaned_input}" >> $GITHUB_ENV
           else
+            # 安全处理仓库变量（去除外围单引号）
+            cleaned_var=$(echo '${{ vars.DOCKER_SYNC_MAPPINGS }}' | sed "s/^['\"]//;s/['\"]$//")
             echo "SYNC_SOURCE=repository" >> $GITHUB_ENV
-            echo "DOCKER_SYNC_MAPPINGS='${{ vars.DOCKER_SYNC_MAPPINGS }}'" >> $GITHUB_ENV
+            echo "DOCKER_SYNC_MAPPINGS=${cleaned_var}" >> $GITHUB_ENV
           fi
 
       # 前置校验步骤
       - name: Validate mappings configuration
         run: |
-          if [[ -z "$DOCKER_SYNC_MAPPINGS" ]]; then
-            echo "::error::[配置检查] 未找到同步配置，来源：$SYNC_SOURCE"
-            echo "请通过以下方式之一提供配置："
+          if [[ -z "$DOCKER_SYNC_MAPPINGS" || "$DOCKER_SYNC_MAPPINGS" =~ ^[[:space:],]*$ ]]; then
+            echo "::error::[配置检查] 无效配置，来源：$SYNC_SOURCE"
+            echo "请通过以下方式提供有效配置："
             echo "1. 手动触发时输入 mappings 参数"
             echo "2. 在仓库变量中设置 DOCKER_SYNC_MAPPINGS"
             exit 1
           fi
-
-          if [[ "$DOCKER_SYNC_MAPPINGS" =~ ^[[:space:],]*$ ]]; then
-            echo "::error::[配置检查] 无效的空白配置，来源：$SYNC_SOURCE"
-            exit 1
-          fi
+          echo "有效配置内容: [${DOCKER_SYNC_MAPPINGS}]"
 
       - name: Setup build environment
         uses: docker/setup-buildx-action@v3
@@ -72,7 +72,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          # 颜色定义保持不变
+          # 颜色定义
           readonly COLOR_RESET="\033[0m"
           readonly COLOR_SRC="\033[1;34m"
           readonly COLOR_DST="\033[1;35m"
@@ -86,54 +86,73 @@ jobs:
             local message=$2
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             case $level in
-              "INFO") echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" >&2 ;;
-              "WARN") echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" >&2 ;;
-              "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2 ;;
+              "INFO") echo -e "${COLOR_OK}[${timestamp}] INFO: ${message}${COLOR_RESET}" ;;
+              "WARN") echo -e "${COLOR_WARN}[${timestamp}] WARN: ${message}${COLOR_RESET}" ;;
+              "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" ;;
             esac
+          }
+
+          # 字符串清理函数
+          trim_string() {
+            local str="$*"
+            str="${str#"${str%%[![:space:]]*}"}"  # 移除前导空格
+            str="${str%"${str##*[![:space:]]}"}"  # 移除尾部空格
+            echo -n "$str"
           }
 
           # 配置解析逻辑
           log "INFO" "开始解析同步配置（来源：$SYNC_SOURCE）"
           declare -A SYNC_MAP
 
-          # 预处理输入数据
+          # 数据预处理
           cleaned_input=$(
             echo "$DOCKER_SYNC_MAPPINGS" \
-            | tr '\n' ','                  `# 换行转逗号` \
-            | tr -s ','                    `# 合并重复逗号` \
-            | sed -e 's/^,//' -e 's/,$//'  `# 去除首尾逗号`
+            | tr '\n' ','                 `# 换行符转逗号` \
+            | sed 's/,+/,/g'              `# 合并连续逗号` \
+            | sed -e 's/^,*//' -e 's/,*$//'  # 去除首尾逗号
           )
 
           IFS=',' read -ra entries <<< "$cleaned_input"
           valid_count=0
 
           for entry in "${entries[@]}"; do
-            IFS='=' read -r key value <<< "$entry"
-            key=$(echo "$key" | xargs)       # 去除前后空格
-            value=$(echo "$value" | xargs)
+            entry=$(trim_string "$entry")
+            if [[ -z "$entry" ]]; then continue; fi
 
+            IFS='=' read -r key value <<< "$entry"
+            key=$(trim_string "$key")
+            value=$(trim_string "$value")
+
+            # 键值对非空校验
             if [[ -z "$key" || -z "$value" ]]; then
-              log "WARN" "忽略无效条目: '$entry'"
+              log "WARN" "忽略无效条目: '${entry}'"
               continue
             fi
 
+            # 源镜像标签校验
             if [[ "$key" =~ : ]]; then
               src_tag="${key#*:}"
-              if [[ "$src_tag" =~ [/\\] ]]; then
-                log "WARN" "条目格式错误: '$entry'（包含非法字符）"
+              if [[ "$src_tag" =~ [/\\\'\"] ]]; then
+                log "WARN" "条目包含非法字符: '${entry}'"
                 continue
               fi
             fi
 
+            # 高危字符过滤（守护代码安全）
+            if [[ "$key" =~ [\'\"\\] ]] || [[ "$value" =~ [\'\"\\] ]]; then
+              log "WARN" "检测到危险字符，跳过条目: '${entry}'"
+              continue
+            fi
+
             SYNC_MAP["$key"]="$value"
             ((valid_count++))
-            log "INFO" "成功解析: ${COLOR_SRC}${key}${COLOR_RESET} → ${COLOR_DST}${value}${COLOR_RESET}"
+            log "INFO" "有效映射: ${COLOR_SRC}${key}${COLOR_RESET} → ${COLOR_DST}${value}${COLOR_RESET}"
           done
 
-          # 映射有效性检查
+          # 最终有效性检查
           if [[ $valid_count -eq 0 ]]; then
-            log "ERROR" "没有有效的同步配置项"
-            log "ERROR" "原始输入内容：'$DOCKER_SYNC_MAPPINGS'"
+            log "ERROR" "没有有效同步条目"
+            echo "原始输入内容 → [$DOCKER_SYNC_MAPPINGS]"
             exit 1
           fi
 
