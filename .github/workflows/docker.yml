@@ -311,12 +311,5 @@ jobs:
             ```diff
             ${{ env.FAILED_LIST }}
             ```
-
-            ### **执行统计**
-            ```diff
-            + 成功率: ${{ env.SUCCESS_PERCENT }}%
-            - 总耗时: ${{ format('{0}m {1}s', (env.DURATION / 60) | floor, env.DURATION % 60) }}
-            ${{ job.status == 'success' && '✅ 所有任务已完成' || '❌ 存在同步错误' }}
-            ```
           hitokoto: false
           wpush_key: ${{ secrets.WPUSH_KEY }}
