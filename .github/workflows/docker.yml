@@ -72,6 +72,9 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
+          # 记录开始时间（用于耗时计算）
+          echo "SYNC_START=$(date +%s)" >> $GITHUB_ENV
+
           # 颜色定义
           readonly COLOR_RESET="\033[0m"
           readonly COLOR_SRC="\033[1;34m"
@@ -214,7 +217,7 @@ jobs:
 
             echo -e "${COLOR_OK}架构对比报告：${COLOR_RESET}"
 
-            # 获取架构信息
+            # 新增输出过滤 ↓ 确保捕获正确架构信息
             src_arch=$(get_architecture "$src_image" | tail -1)
             if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$dst_image" 2>/dev/null); then
               dst_arch=$(get_architecture "$dst_image" | tail -1)
@@ -227,7 +230,7 @@ jobs:
 
             src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://$src_image")
 
-            # 修正条件判断结构
+            # 判断是否跳过同步
             if $dst_exists && [[ "$dst_digest" == "$src_digest" ]]; then
               log "INFO" "源Digest: ${COLOR_SRC}$src_digest${COLOR_RESET}"
               log "INFO" "目标Digest: ${COLOR_DST}$dst_digest${COLOR_RESET}"
@@ -237,39 +240,47 @@ jobs:
               continue
             fi
 
-            # 执行同步
+            # 执行同步操作
             if sync_image "$src_image" "$dst_image"; then
               success_images+="✅ ${src_image} → ${dst_image}"$'\n'
             else
               failed_images+="❌ ${src_image} → ${dst_image}"$'\n'
             fi
-            
             echo "::endgroup::"
           done
-          
-          # 计算统计数据
-          success_count=$(grep -c '✅' <<< "$success_images")
-          skipped_count=$(grep -c '⏩' <<< "$skipped_images")
-          failed_count=$(grep -c '❌' <<< "$failed_images")
+
+          # 计算执行时间（单位：秒）
+          SYNC_END=$(date +%s)
+          SYNC_DURATION=$((SYNC_END - SYNC_START))
+
+          # 结果统计
+          success_count=$(grep -c '^✅' <<< "$success_images" || true)
+          skipped_count=$(grep -c '^⏩' <<< "$skipped_images" || true)
+          failed_count=$(grep -c '^❌' <<< "$failed_images" || true)
           total=$((success_count + skipped_count + failed_count))
-          success_percent=$((total > 0 ? success_count*100/total : 0))
+          success_percent=$((total > 0 ? (success_count * 100) / total : 0))
 
           # 导出环境变量
-          echo "SUCCESS_COUNT=$success_count" >> $GITHUB_ENV
-          echo "SKIPPED_COUNT=$skipped_count" >> $GITHUB_ENV
-          echo "FAILED_COUNT=$failed_count" >> $GITHUB_ENV
-          echo "SUCCESS_PERCENT=$success_percent" >> $GITHUB_ENV  
-          echo "HAS_SUCCESS=$([[ $success_count -gt 0 ]] && echo true || echo false)" >> $GITHUB_ENV
-          
-          # 导出原始列表
+          {
+            echo "SUCCESS_COUNT=$success_count"
+            echo "SKIPPED_COUNT=$skipped_count"
+            echo "FAILED_COUNT=$failed_count"
+            echo "SUCCESS_PERCENT=$success_percent"
+            echo "DURATION=${SYNC_DURATION}s"
+            echo "HAS_SUCCESS=$([[ $success_count -gt 0 ]] && echo true || echo false)"
+          } >> $GITHUB_ENV
+
+          # 处理通知内容格式
           echo "SUCCESS_LIST<<EOF" >> $GITHUB_ENV
-          echo -e "${success_images%\\n}" >> $GITHUB_ENV  # 移除最后一个换行
+          [[ -n "$success_images" ]] && echo -e "${success_images%$'\n'}" || echo "# 无成功条目" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+
           echo "SKIPPED_LIST<<EOF" >> $GITHUB_ENV
-          echo -e "${skipped_images%\\n}" >> $GITHUB_ENV
+          [[ -n "$skipped_images" ]] && echo -e "${skipped_images%$'\n'}" || echo "# 无跳过条目" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+
           echo "FAILED_LIST<<EOF" >> $GITHUB_ENV
-          echo -e "${failed_images%\\n}" >> $GITHUB_ENV
+          [[ -n "$failed_images" ]] && echo -e "${failed_images%$'\n'}" || echo "# 无失败条目" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
       - name: 发送通知
@@ -279,32 +290,33 @@ jobs:
           title: "🔁 镜像同步报告 - ${{ job.status }}"
           content: |
             ### **执行概况**
-            📊 **统计**: 总数 (${{ env.SUCCESS_COUNT + env.SKIPPED_COUNT + env.FAILED_COUNT }}) | ✅ ${{ env.SUCCESS_COUNT }} | ⏩ ${{ env.SKIPPED_COUNT }} | ❌ ${{ env.FAILED_COUNT }}
+            📊 **统计**: 
+            - 总数: ${{ env.SUCCESS_COUNT + env.SKIPPED_COUNT + env.FAILED_COUNT }}
+            - ✅ 成功: ${{ env.SUCCESS_COUNT }}
+            - ⏩ 跳过: ${{ env.SKIPPED_COUNT }}
+            - ❌ 失败: ${{ env.FAILED_COUNT }}
 
             ### **同步详情**
-            #### ✅ 成功同步 (${{ env.SUCCESS_COUNT }})
+            #### ✅ 成功同步
             ```diff
-            ${{ join(format('+ {0}', split(env.SUCCESS_LIST, '\n')), '\n') }}
-            ${{ env.SUCCESS_COUNT == 0 && '# 无成功同步任务' || '' }}
+            ${{ env.SUCCESS_LIST }}
             ```
 
-            #### ⏩ 跳过同步 (${{ env.SKIPPED_COUNT }})
+            #### ⏩ 跳过同步
             ```diff
-            ${{ join(format('- {0}', split(env.SKIPPED_LIST, '\n')), '\n') }}
-            ${{ env.SKIPPED_COUNT == 0 && '# 无跳过同步任务' || '' }}
+            ${{ env.SKIPPED_LIST }}
             ```
 
-            #### ❌ 同步失败 (${{ env.FAILED_COUNT }})
+            #### ❌ 同步失败
             ```diff
-            ${{ join(format('! {0}', split(env.FAILED_LIST, '\n')), '\n') }}
-            ${{ env.FAILED_COUNT == 0 && '# 所有镜像同步成功' || '' }}
+            ${{ env.FAILED_LIST }}
             ```
 
-            ### **性能统计**
+            ### **执行统计**
             ```diff
             + 成功率: ${{ env.SUCCESS_PERCENT }}%
-            - 总耗时: ${{ steps.sync.outputs.duration }}
-            ${{ job.status == 'success' && '🎉 所有任务已完成' || '⚠️ 存在同步错误' }}
+            - 总耗时: ${{ format('{0}m {1}s', (env.DURATION / 60) | floor, env.DURATION % 60) }}
+            ${{ job.status == 'success' && '✅ 所有任务已完成' || '❌ 存在同步错误' }}
             ```
           hitokoto: false
-          wpush_key: ${{ secrets.WPUSH_KEY }
+          wpush_key: ${{ secrets.WPUSH_KEY }}
