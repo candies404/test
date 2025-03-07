@@ -48,9 +48,6 @@ jobs:
 
       - name: Setup build environment
         uses: docker/setup-buildx-action@v3
-        with:
-          install: true
-          driver-opts: network=host
 
       - name: Install system dependencies
         run: |
@@ -93,9 +90,11 @@ jobs:
             esac
           }
 
-          # 结果收集变量
+          # 初始化状态跟踪
           success_images=""
           failed_images=""
+          skipped_images=""
+          notification_needed="false"
 
           # 解析环境变量到关联数组
           declare -A SYNC_MAP=()
@@ -147,7 +146,9 @@ jobs:
           get_architecture() {
             local image=$1
             log "INFO" "获取架构信息：${COLOR_SRC}$image${COLOR_RESET}"
-            # 新条件：仅检查是否存在 manifests 数组
+
+
+            # 条件：仅检查是否存在 manifests 数组
             if raw_manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>&1) &&
               jq -e '.manifests != null' <<< "$raw_manifest" &>/dev/null; then
               local arch_list
@@ -215,55 +216,39 @@ jobs:
             dst_ref="${SYNC_MAP[$source_ref]}"
             dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
 
-            echo -e "${COLOR_OK}架构对比报告：${COLOR_RESET}"
-
-            # 新增输出过滤 ↓ 确保捕获正确架构信息
-            src_arch=$(get_architecture "$src_image" | tail -1)
-            if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$dst_image" 2>/dev/null); then
-              dst_arch=$(get_architecture "$dst_image" | tail -1)
-              dst_exists=true
-            else
-              dst_arch="N/A"
-              dst_exists=false
-            fi
-
-
+            # 获取digest信息
             src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://$src_image")
-            if $dst_exists; then
-                dst_digest=$(jq -r '.Digest' <<< "$target_info")
-                if [[ "$dst_digest" == "$src_digest" ]]; then
-                    log "INFO" "源Digest: ${COLOR_SRC}$src_digest${COLOR_RESET}"
-                    log "INFO" "目标Digest: ${COLOR_DST}$dst_digest${COLOR_RESET}"
-                    log "INFO" "目标镜像已是最新，跳过同步"
-                    echo "::endgroup::"
-                    continue
-                fi
+            if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$dst_image" 2>/dev/null); then
+              dst_digest=$(jq -r '.Digest' <<< "$target_info")
+              if [[ "$dst_digest" == "$src_digest" ]]; then
+                skipped_images+="⏩ ${src_image} → ${dst_image}\n"
+                echo "::endgroup::"
+                continue
+              fi
             fi
 
             if sync_image "$src_image" "$dst_image"; then
               success_images+="✅ ${src_image} → ${dst_image}\n"
+              notification_needed="true"
             else
               failed_images+="❌ ${src_image} → ${dst_image}\n"
+              notification_needed="true"
             fi
-
             echo "::endgroup::"
           done
 
           # 生成通知内容
           notification_content=""
-          if [[ -n "$success_images" ]]; then
-            notification_content+="💚 成功同步的镜像：\n${success_images}\n"
-          else
-            notification_content+="💚 成功同步的镜像：无\n"
+          if [[ "$notification_needed" == "true" ]]; then
+            notification_content+="📦 镜像同步报告\n"
+            [[ -n "$success_images" ]] && notification_content+="\n🌟 同步成功：\n${success_images}"
+            [[ -n "$skipped_images" ]] && notification_content+="\n⏩ 跳过同步：\n${skipped_images}"
+            [[ -n "$failed_images" ]] && notification_content+="\n❌ 失败任务：\n${failed_images}"
+            notification_content=$(echo -e "$notification_content")
           fi
 
-          if [[ -n "$failed_images" ]]; then
-            notification_content+="💔 失败的镜像：\n${failed_images}"
-          else
-            notification_content+="💔 失败的镜像：无"
-          fi
-
-          # 保存到环境变量
+          # 设置输出参数
+          echo "notification_needed=$notification_needed" >> $GITHUB_OUTPUT
           echo "NOTIFICATION_CONTENT<<EOF" >> $GITHUB_ENV
           echo -e "$notification_content" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
