@@ -260,7 +260,6 @@ jobs:
             echo "SKIPPED_COUNT=$skipped_count"
             echo "FAILED_COUNT=$failed_count"
             echo "SUCCESS_PERCENT=$success_percent"
-            echo "DURATION=${SYNC_DURATION}s"
             echo "HAS_SUCCESS=$([[ $success_count -gt 0 ]] && echo true || echo false)"
           } >> $GITHUB_ENV
 
