@@ -110,7 +110,7 @@ jobs:
             SYNC_MAP["$key"]="$value"
           done
 
-         normalize_image() {
+          normalize_image() {
             local image_ref=$1 default_tag=$2 context=$3
             local image_name image_tag
 
@@ -323,4 +323,4 @@ jobs:
             ${{ job.status == 'success' && '✅ 所有任务已完成' || '❌ 存在同步错误' }}
             ```
           hitokoto: false
-          wpush_key: ${{ secrets.WPUSH_KEY }}
+          wpush_key: ${{ secrets.WPUSH_KEY }
