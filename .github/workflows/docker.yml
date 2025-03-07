@@ -77,7 +77,6 @@ jobs:
           readonly COLOR_SRC="\033[1;34m"
           readonly COLOR_DST="\033[1;35m"
           readonly COLOR_OK="\033[1;32m"
-          readonly COLOR_WARN="\033[1;33m"
           readonly COLOR_ERR="\033[1;31m"
 
           # 日志函数
@@ -104,14 +103,11 @@ jobs:
           for pair in "${MAPPING_PAIRS[@]}"; do
             key="${pair%%=*}"
             value="${pair#*=}"
-            if [[ -z "$key" || -z "$value" ]]; then
-              log "ERROR" "无效的映射对: $pair"
-              exit 1
-            fi
+            [[ -z "$key" || -z "$value" ]] && { echo "::error::无效映射对"; exit 1; }
             SYNC_MAP["$key"]="$value"
           done
 
-          normalize_image() {
+         normalize_image() {
             local image_ref=$1 default_tag=$2 context=$3
             local image_name image_tag
 
@@ -218,78 +214,97 @@ jobs:
 
             echo -e "${COLOR_OK}架构对比报告：${COLOR_RESET}"
 
-            # 新增输出过滤 ↓ 确保捕获正确架构信息
+            # 获取架构信息
             src_arch=$(get_architecture "$src_image" | tail -1)
             if target_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$dst_image" 2>/dev/null); then
               dst_arch=$(get_architecture "$dst_image" | tail -1)
               dst_exists=true
+              dst_digest=$(jq -r '.Digest' <<< "$target_info")
             else
               dst_arch="N/A"
               dst_exists=false
             fi
 
-
             src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://$src_image")
-            if $dst_exists; then
-                dst_digest=$(jq -r '.Digest' <<< "$target_info")
-                if [[ "$dst_digest" == "$src_digest" ]]; then
-                    log "INFO" "源Digest: ${COLOR_SRC}$src_digest${COLOR_RESET}"
-                    log "INFO" "目标Digest: ${COLOR_DST}$dst_digest${COLOR_RESET}"
-                    log "INFO" "目标镜像已是最新，跳过同步"
-                    skipped_images+="⏩ ${src_image} → ${dst_image}\n"
-                    echo "::endgroup::"
-                    continue
-                fi
+
+            # 修正条件判断结构
+            if $dst_exists && [[ "$dst_digest" == "$src_digest" ]]; then
+              log "INFO" "源Digest: ${COLOR_SRC}$src_digest${COLOR_RESET}"
+              log "INFO" "目标Digest: ${COLOR_DST}$dst_digest${COLOR_RESET}"
+              log "INFO" "目标镜像已是最新，跳过同步"
+              skipped_images+="⏩ ${src_image} → ${dst_image}"$'\n'
+              echo "::endgroup::"
+              continue
             fi
 
+            # 执行同步
             if sync_image "$src_image" "$dst_image"; then
-              success_images+="✅ ${src_image} → ${dst_image}\n"
+              success_images+="✅ ${src_image} → ${dst_image}"$'\n'
             else
-              failed_images+="❌ ${src_image} → ${dst_image}\n"
+              failed_images+="❌ ${src_image} → ${dst_image}"$'\n'
             fi
-
+            
             echo "::endgroup::"
           done
+          
+          # 计算统计数据
+          success_count=$(grep -c '✅' <<< "$success_images")
+          skipped_count=$(grep -c '⏩' <<< "$skipped_images")
+          failed_count=$(grep -c '❌' <<< "$failed_images")
+          total=$((success_count + skipped_count + failed_count))
+          success_percent=$((total > 0 ? success_count*100/total : 0))
 
-          # 生成通知内容
-          notification_content=""
-          if [[ -n "$success_images" ]]; then
-            notification_content+="🌟 同步成功：\n${success_images}\n"
-            echo "::set-output name=has_success::true"
-          else
-            notification_content+="🌟 同步成功：无\n"
-          fi
-
-          if [[ -n "$skipped_images" ]]; then
-            notification_content+="⏩ 跳过同步：\n${skipped_images}\n"
-          else
-            notification_content+="⏩ 跳过同步：无\n"
-          fi
-
-          if [[ -n "$failed_images" ]]; then
-            notification_content+="❌ 失败任务：\n${failed_images}"
-          else
-            notification_content+="❌ 失败任务：无"
-          fi
-
-          # 保存到环境变量
-          echo "NOTIFICATION_CONTENT<<EOF" >> $GITHUB_ENV
-          echo -e "$notification_content" >> $GITHUB_ENV
+          # 导出环境变量
+          echo "SUCCESS_COUNT=$success_count" >> $GITHUB_ENV
+          echo "SKIPPED_COUNT=$skipped_count" >> $GITHUB_ENV
+          echo "FAILED_COUNT=$failed_count" >> $GITHUB_ENV
+          echo "SUCCESS_PERCENT=$success_percent" >> $GITHUB_ENV  
+          echo "HAS_SUCCESS=$([[ $success_count -gt 0 ]] && echo true || echo false)" >> $GITHUB_ENV
+          
+          # 导出原始列表
+          echo "SUCCESS_LIST<<EOF" >> $GITHUB_ENV
+          echo -e "${success_images%\\n}" >> $GITHUB_ENV  # 移除最后一个换行
           echo "EOF" >> $GITHUB_ENV
-
-          # 设置结果标记
-          if [[ -n "$success_images" ]]; then
-            echo "HAS_SUCCESS=true" >> $GITHUB_ENV
-          else
-            echo "HAS_SUCCESS=false" >> $GITHUB_ENV
-          fi
+          echo "SKIPPED_LIST<<EOF" >> $GITHUB_ENV
+          echo -e "${skipped_images%\\n}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "FAILED_LIST<<EOF" >> $GITHUB_ENV
+          echo -e "${failed_images%\\n}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: 发送通知
         uses: candies404/Multi-Channel-Notifier@latest
-        if: ${{ env.HAS_SUCCESS == 'true' || failure() }}  # 成功或有失败时发送
+        if: ${{ env.HAS_SUCCESS == 'true' || failure() }}
         with:
-          title: "镜像同步结果"
+          title: "🔁 镜像同步报告 - ${{ job.status }}"
           content: |
-            ${{ env.NOTIFICATION_CONTENT }}
-          hitokoto: 'false'
-          wpush_key: ${{ secrets.WPUSH_KEY }}
+            ### **执行概况**
+            📊 **统计**: 总数 (${{ env.SUCCESS_COUNT + env.SKIPPED_COUNT + env.FAILED_COUNT }}) | ✅ ${{ env.SUCCESS_COUNT }} | ⏩ ${{ env.SKIPPED_COUNT }} | ❌ ${{ env.FAILED_COUNT }}
+
+            ### **同步详情**
+            #### ✅ 成功同步 (${{ env.SUCCESS_COUNT }})
+            ```diff
+            ${{ join(format('+ {0}', split(env.SUCCESS_LIST, '\n')), '\n') }}
+            ${{ env.SUCCESS_COUNT == 0 && '# 无成功同步任务' || '' }}
+            ```
+
+            #### ⏩ 跳过同步 (${{ env.SKIPPED_COUNT }})
+            ```diff
+            ${{ join(format('- {0}', split(env.SKIPPED_LIST, '\n')), '\n') }}
+            ${{ env.SKIPPED_COUNT == 0 && '# 无跳过同步任务' || '' }}
+            ```
+
+            #### ❌ 同步失败 (${{ env.FAILED_COUNT }})
+            ```diff
+            ${{ join(format('! {0}', split(env.FAILED_LIST, '\n')), '\n') }}
+            ${{ env.FAILED_COUNT == 0 && '# 所有镜像同步成功' || '' }}
+            ```
+
+            ### **性能统计**
+            ```diff
+            + 成功率: ${{ env.SUCCESS_PERCENT }}%
+            - 总耗时: ${{ steps.sync.outputs.duration }}
+            ${{ job.status == 'success' && '🎉 所有任务已完成' || '⚠️ 存在同步错误' }}
+            ```
+          hitokoto: false
+          wpush_key: ${{ secrets.WPUSH_KEY }
