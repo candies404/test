@@ -67,6 +67,7 @@ jobs:
           DOCKER_REGISTRY: index.docker.io
 
       - name: Execute image synchronization
+        id: sync
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
@@ -91,6 +92,10 @@ jobs:
               "ERROR") echo -e "${COLOR_ERR}[${timestamp}] ERROR: ${message}${COLOR_RESET}" >&2 ;;
             esac
           }
+
+          # 结果收集变量
+          success_images=""
+          failed_images=""
 
           # 解析环境变量到关联数组
           declare -A SYNC_MAP=()
@@ -142,13 +147,9 @@ jobs:
           get_architecture() {
             local image=$1
             log "INFO" "获取架构信息：${COLOR_SRC}$image${COLOR_RESET}"
-
-            # ================== 核心修正点 ===================
-            # 旧条件：.manifests != null and (.mediaType | contains("manifest.list"))
             # 新条件：仅检查是否存在 manifests 数组
             if raw_manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>&1) &&
               jq -e '.manifests != null' <<< "$raw_manifest" &>/dev/null; then
-              # ================== 修正完成 ====================
               local arch_list
               arch_list=$(jq -r '
                 [.manifests[].platform |
@@ -238,6 +239,41 @@ jobs:
                     continue
                 fi
             fi
-            sync_image "$src_image" "$dst_image"
+
+            if sync_image "$src_image" "$dst_image"; then
+              success_images+="✅ ${src_image} → ${dst_image}\n"
+            else
+              failed_images+="❌ ${src_image} → ${dst_image}\n"
+            fi
+
             echo "::endgroup::"
           done
+
+          # 生成通知内容
+          notification_content=""
+          if [[ -n "$success_images" ]]; then
+            notification_content+="💚 成功同步的镜像：\n${success_images}\n"
+          else
+            notification_content+="💚 成功同步的镜像：无\n"
+          fi
+
+          if [[ -n "$failed_images" ]]; then
+            notification_content+="💔 失败的镜像：\n${failed_images}"
+          else
+            notification_content+="💔 失败的镜像：无"
+          fi
+
+          # 保存到环境变量
+          echo "NOTIFICATION_CONTENT<<EOF" >> $GITHUB_ENV
+          echo -e "$notification_content" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: 发送通知
+        uses: candies404/Multi-Channel-Notifier@latest
+        if: always()  # 确保前序步骤失败时仍发送通知
+        with:
+          title: "镜像同步结果"
+          content: |
+            ${{ env.NOTIFICATION_CONTENT }}
+          hitokoto: 'false'
+          wpush_key: ${{ secrets.WPUSH_KEY }}
