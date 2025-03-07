@@ -214,7 +214,7 @@ jobs:
             dst_ref="${SYNC_MAP[$source_ref]}"
             dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
 
-            echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
+            echo -e "${COLOR_OK}架构对比报告：${COLOR_RESET}"
 
             # 新增输出过滤 ↓ 确保捕获正确架构信息
             src_arch=$(get_architecture "$src_image" | tail -1)
