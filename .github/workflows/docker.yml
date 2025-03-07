@@ -55,7 +55,7 @@ jobs:
       - name: Install system dependencies
         run: |
           echo "🛠️ Installing required tools..."
-          sudo apt-get update && sudo apt-get install -y skopeo jq
+          sudo apt-get update && sudo apt-get install -y skopeo
           echo "✅ Dependencies installed"
 
       - name: Login to Docker Hub
@@ -226,17 +226,17 @@ jobs:
               dst_exists=false
             fi
 
-            # echo -e "\n${COLOR_OK}架构对比报告：${COLOR_RESET}"
-            # 使用 column 格式化输出 ↓
-            # paste <(echo "源架构" "$src_arch") <(echo "目标架构" "$dst_arch") | 
-            # column -t -s $'\t' -o " │ "
-            # echo
 
             src_digest=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" --format '{{.Digest}}' "docker://$src_image")
-            if $dst_exists && [[ "$(jq -r '.Digest' <<< "$target_info")" == "$src_digest" ]]; then
-              log "INFO" "目标镜像已是最新，跳过同步"
-              echo "::endgroup::"
-              continue
+            if $dst_exists; then
+                dst_digest=$(jq -r '.Digest' <<< "$target_info")
+                if [[ "$dst_digest" == "$src_digest" ]]; then
+                    log "INFO" "源Digest: ${COLOR_SRC}$src_digest${COLOR_RESET}"
+                    log "INFO" "目标Digest: ${COLOR_DST}$dst_digest${COLOR_RESET}"
+                    log "INFO" "目标镜像已是最新，跳过同步"
+                    echo "::endgroup::"
+                    continue
+                fi
             fi
             sync_image "$src_image" "$dst_image"
             echo "::endgroup::"
