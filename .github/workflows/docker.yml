@@ -291,7 +291,7 @@ jobs:
           content: |
             ### **执行概况**
             📊 **统计**: 
-            - 总数: ${{ env.SUCCESS_COUNT + env.SKIPPED_COUNT + env.FAILED_COUNT }}
+            - 总数: ${{ env.TOTAL_COUNT }}
             - ✅ 成功: ${{ env.SUCCESS_COUNT }}
             - ⏩ 跳过: ${{ env.SKIPPED_COUNT }}
             - ❌ 失败: ${{ env.FAILED_COUNT }}
@@ -319,4 +319,4 @@ jobs:
             ${{ job.status == 'success' && '✅ 所有任务已完成' || '❌ 存在同步错误' }}
             ```
           hitokoto: false
-          wpush_key: ${{ secrets.WPUSH_KEY }
+          wpush_key: ${{ secrets.WPUSH_KEY }}
