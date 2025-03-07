@@ -259,7 +259,6 @@ jobs:
           failed_count=$(grep -c '^❌' <<< "$failed_images" || true)
           total=$((success_count + skipped_count + failed_count))
           success_percent=$((total > 0 ? (success_count * 100) / total : 0))
-          timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           # 导出环境变量
           {
@@ -267,7 +266,6 @@ jobs:
             echo "SKIPPED_COUNT=$skipped_count"
             echo "FAILED_COUNT=$failed_count"
             echo "SUCCESS_PERCENT=$success_percent"
-            echo "TIMESTAMP=$timestamp"
             echo "DURATION=${SYNC_DURATION}s"
             echo "HAS_SUCCESS=$([[ $success_count -gt 0 ]] && echo true || echo false)"
           } >> $GITHUB_ENV
@@ -292,8 +290,6 @@ jobs:
           title: "🔁 镜像同步报告 - ${{ job.status }}"
           content: |
             ### **执行概况**
-            🕒 **时间**: ${{ env.TIMESTAMP }}  
-            🚀 **触发方式**: ${{ '手动触发' if github.event_name == 'workflow_dispatch' else '自动触发' }}
             📊 **统计**: 
             - 总数: ${{ env.SUCCESS_COUNT + env.SKIPPED_COUNT + env.FAILED_COUNT }}
             - ✅ 成功: ${{ env.SUCCESS_COUNT }}
