@@ -72,8 +72,6 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          # 记录开始时间（用于耗时计算）
-          echo "SYNC_START=$(date +%s)" >> $GITHUB_ENV
 
           # 颜色定义
           readonly COLOR_RESET="\033[0m"
@@ -248,10 +246,6 @@ jobs:
             fi
             echo "::endgroup::"
           done
-
-          # 计算执行时间（单位：秒）
-          SYNC_END=$(date +%s)
-          SYNC_DURATION=$((SYNC_END - SYNC_START))
 
           # 结果统计
           success_count=$(grep -c '^✅' <<< "$success_images" || true)
