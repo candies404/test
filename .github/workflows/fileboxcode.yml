@@ -1,11 +1,11 @@
-name: 替换FileCodeBox 密码
+name: 替换 FileCodeBox 密码
 
 on:
   workflow_dispatch:  # 手动触发
 
 jobs:
   change-filecodebox-password:
-    name: 修改FileCodeBox 默认密码
+    name: 修改 FileCodeBox 默认密码
     runs-on: ubuntu-latest
 
     steps:
