@@ -243,9 +243,9 @@ jobs:
             fi
 
             if sync_image "$src_image" "$dst_image"; then
-              success_images+="✅ ${src_image} → ${dst_image}\n"
+              success_images+="✅ \`${src_image}\` → \`${dst_image}\`\n"
             else
-              failed_images+="❌ ${src_image} → ${dst_image}\n"
+              failed_images+="❌ \`${src_image}\` → \`${dst_image}\`\n"
             fi
 
             echo "::endgroup::"
@@ -253,23 +253,25 @@ jobs:
 
           # 生成通知内容
           notification_content=""
+
           if [[ -n "$success_images" ]]; then
-            notification_content+="📊 **镜像同步报告**: \n"
-            echo "::set-output name=has_success::true"
+            notification_content+="📊 **同步成功**：\n${success_images}\n"
+            echo "HAS_SUCCESS=true" >> $GITHUB_ENV
           else
-            notification_content+="📊 同步成功：无\n"
+            notification_content+="📊 **同步成功**：无\n\n"
+            echo "HAS_SUCCESS=false" >> $GITHUB_ENV
           fi
 
           if [[ -n "$skipped_images" ]]; then
-            notification_content+="⏩ 跳过同步：\n${skipped_images}\n"
+            notification_content+="🔜 **跳过同步**：\n${skipped_images}\n"
           else
-            notification_content+="⏩ 跳过同步：无\n"
+            notification_content+="🔜 **跳过同步**：无\n\n"
           fi
 
           if [[ -n "$failed_images" ]]; then
-            notification_content+="❌ 失败任务：\n${failed_images}"
+            notification_content+="❌ **失败任务**：\n${failed_images}"
           else
-            notification_content+="❌ 失败任务：无"
+            notification_content+="✅ **失败任务**：无"
           fi
 
           # 保存到环境变量
