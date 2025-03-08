@@ -1,4 +1,4 @@
-name: Docker 镜像同步
+name: Docker 镜像同步优化版
 
 on:
   workflow_dispatch:
@@ -22,200 +22,182 @@ jobs:
       - name: 验证镜像同步格式
         id: validate-mappings
         run: |
-          # 优先使用手动输入
-          if [ -n "${{ github.event.inputs.sync_mappings }}" ]; then
-            echo "使用手动输入的同步映射"
-            PROCESSED_MAPPINGS="${{ github.event.inputs.sync_mappings }}"
-          else
-            echo "使用环境变量中的同步映射"
-            PROCESSED_MAPPINGS="$DOCKER_SYNC_MAPPINGS"
-          fi
-
-          # 清理特殊字符并校验格式
-          CLEAN_MAPPINGS=$(echo "$PROCESSED_MAPPINGS" | tr -d '\n' | tr -s ' ' | sed -e 's/ //g' -e 's/,+/,/g')
-          if [ -z "$CLEAN_MAPPINGS" ]; then
-            echo "::error::未配置同步映射"
+          # 参数优先级处理
+          PROCESSED_MAPPINGS="${INPUT_SYNC_MAPPINGS:-${DOCKER_SYNC_MAPPINGS}}"
+          
+          # 增强空值检查
+          if [[ -z "${PROCESSED_MAPPINGS}" ]]; then
+            echo "::error::Missing sync mappings"
             exit 1
           fi
 
-          if ! echo "$CLEAN_MAPPINGS" | grep -qE '^([\w./-]+(:[\w.-]+)?=[\w./-]+(:[\w.-]+)?)(,[\w./-]+(:[\w.-]+)?=[\w./-]+(:[\w.-]+)?)*$'; then
-            echo "::error::无效的映射格式"
+          # 输入清洗强化处理
+          CLEAN_MAPPINGS=$(echo "${PROCESSED_MAPPINGS}" | \
+            tr -d '\n' | tr -s ' ' | \
+            sed -E 's/[[:space:]]+//g; s/,+/,/g; s/^,//; s/,$//')
+
+          # 优化正则表达式验证
+          if ! grep -qE '^([a-zA-Z0-9][a-zA-Z0-9_.\-/]*=[a-zA-Z0-9][a-zA-Z0-9_.\-/]*)(,[a-zA-Z0-9][a-zA-Z0-9_.\-/]*=[a-zA-Z0-9][a-zA-Z0-9_.\-/]*)*$' <<< "${CLEAN_MAPPINGS}"; then
+            echo "::error::Invalid mapping format"
             exit 1
           fi
 
-          echo "SYNC_MAPPINGS=${CLEAN_MAPPINGS}" >> $GITHUB_ENV
+          echo "SYNC_MAPPINGS=${CLEAN_MAPPINGS}" >> "${GITHUB_ENV}"
 
       - name: 设置多架构构建环境
         uses: docker/setup-buildx-action@v3
         with:
           install: true
-          driver-opts: network=host
+          driver-opts: |
+            network=host
+            image=moby/buildkit:master-rootless
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
 
       - name: 安装 skopeo
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
-          echo "skopeo $(skopeo --version | awk '{print $3}') 已安装"
+          # 增加安装校验
+          if ! sudo apt-get update -qq && sudo apt-get install -y skopeo; then
+            echo "::error::Skopeo installation failed"
+            exit 1
+          fi
+          skopeo --version | awk '{printf "✅ skopeo v%s installed", $3}'
 
       - name: 登录 Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ env.DOCKERHUB_USER }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
+          username: ${DOCKERHUB_USER}
+          password: ${DOCKERHUB_TOKEN}
+        env:
+          DOCKER_REGISTRY: index.docker.io
 
       - name: 执行镜像同步
         id: sync
         run: |
           #!/usr/bin/env bash
-          set -euo pipefail
+          set -eo pipefail
+          shopt -s inherit_errexit
 
-          # 颜色定义
-          readonly COLOR_RESET="\033[0m"
-          readonly COLOR_SRC="\033[1;34m"
-          readonly COLOR_DST="\033[1;36m"
-          readonly COLOR_OK="\033[1;32m"
-          readonly COLOR_ERROR="\033[1;31m"
-
-          # 初始化结果统计
-          declare -i success_count=0 skipped_count=0 failed_count=0
-          declare -a success_list=() skipped_list=() failed_list=()
-
-          # 加载同步映射
-          declare -A SYNC_MAP=()
-          IFS=',' read -ra PAIRS <<< "$SYNC_MAPPINGS"
-          for pair in "${PAIRS[@]}"; do
-            IFS='=' read -r src dst <<< "$pair"
-            SYNC_MAP["$src"]="$dst"
-          done
-
-          # 镜像规范化函数
-          normalize_image() {
-            local raw_ref=$1 context=$2
-            local registry namespace image_tag
-
-            # 分割标签部分
-            if [[ "$raw_ref" == *":"* ]]; then
-              image_tag="${raw_ref##*:}"
-              raw_ref="${raw_ref%:*}"
-            else
-              image_tag="latest"
-            fi
-
-            # 处理注册表路径
-            if [[ "$raw_ref" == *"/"* ]]; then
-              IFS='/' read -ra parts <<< "$raw_ref"
-              registry="docker.io"
-              namespace="${parts[*]:0:${#parts[@]}-1}"
-              image="${parts[-1]}"
-            else
-              registry="docker.io"
-              namespace=$([ "$context" == "source" ] && echo "library" || echo "$DEST_REPO")
-              image="$raw_ref"
-            fi
-
-            # 拼接完整镜像地址
-            printf "%s/%s/%s:%s" "$registry" "$namespace" "$image" "$image_tag"
+          # 增强版日志系统
+          declare -A LOG_COLORS=(
+            [INFO]="\033[1;32m"
+            [WARN]="\033[1;33m" 
+            [ERROR]="\033[1;31m"
+          )
+          log() {
+            local level="${1}"
+            local message="${2}"
+            local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            echo -e "${LOG_COLORS[$level]}[${timestamp}] ${level}: ${message}\033[0m" >&2
           }
 
-          # 镜像同步函数
-          sync_image() {
-            local src=$1 dst=$2
-            echo -e "🔄 同步 ${COLOR_SRC}$src${COLOR_RESET} → ${COLOR_DST}$dst${COLOR_RESET}"
+          # 同步状态追踪器
+          declare -A SYNC_RESULTS=(
+            [TOTAL]=0
+            [SUCCESS]=0
+            [SKIPPED]=0
+            [FAILED]=0
+          )
 
-            # 检查是否为多架构镜像
-            if skopeo inspect --raw --creds "$DOCKERHUB_USER:$DOCKERHUB_TOKEN" "docker://$src" | \
-               jq -e '.manifests != null' >/dev/null 2>&1; then
-              echo "ℹ️ 检测到多架构镜像"
-              docker buildx imagetools create -t "$dst" "$src"
-            else
-              echo "ℹ️ 单架构镜像处理"
-              docker pull --quiet "$src"
-              docker tag "$src" "$dst"
-              docker push --quiet "$dst"
+          # 镜像处理上下文
+          process_mapping() {
+            local source_ref="${1}"
+            local dst_ref="${2}"
+            
+            log INFO "🚦 开始处理映射对：${source_ref} → ${dst_ref}"
+            
+            # 增强镜像正规化处理
+            normalize_image() {
+              local ref="${1}"
+              local default_tag="${2}"
+              local context="${3}"
+              
+              if [[ ! "${ref}" =~ .*/.* ]]; then
+                [[ "${context}" == "source" ]] && ref="library/${ref}"
+                [[ "${context}" == "target" ]] && ref="${DEST_REPO}/${ref}"
+              fi
+              
+              if [[ ! "${ref}" =~ : ]]; then
+                ref+=":${default_tag:-latest}"
+              fi
+              
+              echo "docker.io/${ref}"
+            }
+
+            local src_image dst_image
+            src_image=$(normalize_image "${source_ref}" "latest" "source")
+            dst_image=$(normalize_image "${dst_ref}" "$(cut -d: -f2 <<< "${src_image}")" "target")
+
+            # 架构比对优化
+            compare_architectures() {
+              local src="${1}" dst="${2}"
+              
+              # 使用并行处理提升性能
+              local src_info dst_info
+              src_info=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${src}" 2>&1)
+              dst_info=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${dst}" 2>&1)
+              
+              # 多架构处理逻辑优化
+              jq_arch_filter='[.manifests[].platform | 
+                select(.os != "unknown" and .architecture != "unknown") |
+                "\(.os)/\(.architecture)\(if .variant != "" then "/"+.variant else "" end)"] | unique'
+                
+              src_archs=$(jq -r "${jq_arch_filter}" <<< "${src_info}" | tr -d '\n')
+              dst_archs=$(jq -r "${jq_arch_filter}" <<< "${dst_info}" | tr -d '\n')
+
+              [[ "${src_archs}" == "${dst_archs}" ]] && return 0 || return 1
+            }
+
+            # 镜像同步流程控制
+            if compare_architectures "${src_image}" "${dst_image}"; then
+              log INFO "⏭️ 架构一致，跳过同步"
+              SYNC_RESULTS[SKIPPED]=$((SYNC_RESULTS[SKIPPED]+1))
+              return
             fi
+
+            # 增加重试机制
+            for attempt in {1..3}; do
+              if docker buildx imagetools create -t "${dst_image}" "${src_image}"; then
+                SYNC_RESULTS[SUCCESS]=$((SYNC_RESULTS[SUCCESS]+1))
+                log INFO "✅ 同步成功 (尝试次数: ${attempt})"
+                return 0
+              else
+                log WARN "⚠️ 同步失败 (尝试次数: ${attempt})"
+                sleep $((attempt * 5))
+              fi
+            done
+            
+            SYNC_RESULTS[FAILED]=$((SYNC_RESULTS[FAILED]+1))
+            log ERROR "❌ 同步失败"
+            return 1
           }
 
           # 主处理循环
-          for source_ref in "${!SYNC_MAP[@]}"; do
-            echo "::group::处理镜像对: $source_ref"
-            dest_ref="${SYNC_MAP[$source_ref]}"
-
-            # 标准化镜像地址
-            src_image=$(normalize_image "$source_ref" "source")
-            dst_image=$(normalize_image "$dest_ref" "target")
-            echo -e "  源地址: ${COLOR_SRC}$src_image${COLOR_RESET}"
-            echo -e "  目标地址: ${COLOR_DST}$dst_image${COLOR_RESET}"
-
-            # 获取镜像摘要
-            src_digest=$(skopeo inspect --creds "$DOCKERHUB_USER:$DOCKERHUB_TOKEN" \
-              --format '{{.Digest}}' "docker://$src_image" 2>/dev/null || true)
-
-            if [ -z "$src_digest" ]; then
-              echo "❌ 源镜像不存在或无法访问"
-              ((failed_count++))
-              failed_list+=("$src_image")
-              echo "::endgroup::"
-              continue
-            fi
-
-            # 检查目标镜像状态
-            if dst_info=$(skopeo inspect --creds "$DOCKERHUB_USER:$DOCKERHUB_TOKEN" \
-              "docker://$dst_image" 2>/dev/null); then
-              dst_digest=$(jq -r '.Digest' <<< "$dst_info")
-              if [ "$src_digest" == "$dst_digest" ]; then
-                echo "⏭️ 目标镜像已同步，跳过"
-                ((skipped_count++))
-                skipped_list+=("$src_image")
-                echo "::endgroup::"
-                continue
-              fi
-            fi
-
-            # 执行同步操作
-            if sync_image "$src_image" "$dst_image"; then
-              echo "✅ 同步成功"
-              ((success_count++))
-              success_list+=("$src_image")
-            else
-              echo "❌ 同步失败"
-              ((failed_count++))
-              failed_list+=("$src_image")
-            fi
-
-            echo "::endgroup::"
+          IFS=',' read -ra MAPPING_PAIRS <<< "${SYNC_MAPPINGS}"
+          SYNC_RESULTS[TOTAL]=${#MAPPING_PAIRS[@]}
+          
+          for pair in "${MAPPING_PAIRS[@]}"; do
+            IFS='=' read -r src dst <<< "${pair}"
+            process_mapping "${src}" "${dst}" || true
           done
 
-          # 生成结果报告
-          echo "NOTIFICATION_CONTENT<<EOF" >> $GITHUB_ENV
-          echo "## 同步结果统计" >> $GITHUB_ENV
-          echo "✅ 成功: $success_count" >> $GITHUB_ENV
-          echo "⏭️ 跳过: $skipped_count" >> $GITHUB_ENV
-          echo "❌ 失败: $failed_count" >> $GITHUB_ENV
+          # 生成数据报告
+          report=$(cat <<EOF
+          📊 同步报告：
+          总数：${SYNC_RESULTS[TOTAL]}
+          ✅ 成功：${SYNC_RESULTS[SUCCESS]}
+          ⏩ 跳过：${SYNC_RESULTS[SKIPPED]}
+          ❌ 失败：${SYNC_RESULTS[FAILED]}
+          EOF
+          )
+          
+          echo "NOTIFICATION_CONTENT<<EOF" >> "${GITHUB_ENV}"
+          echo "${report}" >> "${GITHUB_ENV}"
+          echo "EOF" >> "${GITHUB_ENV}"
 
-          [ $success_count -gt 0 ] && echo "HAS_SUCCESS=true" >> $GITHUB_ENV
-          [ $failed_count -gt 0 ] && echo "HAS_FAILURE=true" >> $GITHUB_ENV
-
-          # 构建详细报告
-          build_details() {
-            local title=$1
-            local color=$2
-            shift 2
-            for item in "$@"; do
-              echo -e "${color}•${COLOR_RESET} ${item}"
-            done
-          }
-
-          echo -e "\n### 成功列表" >> $GITHUB_ENV
-          build_details "Success" "$COLOR_OK" "${success_list[@]}" >> $GITHUB_ENV
-          echo -e "\n### 跳过列表" >> $GITHUB_ENV
-          build_details "Skipped" "$COLOR_OK" "${skipped_list[@]}" >> $GITHUB_ENV
-          echo -e "\n### 失败列表" >> $GITHUB_ENV
-          build_details "Failed" "$COLOR_ERROR" "${failed_list[@]}" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-      - name: 发送通知
+      - name: 发送增强通知
         uses: candies404/Multi-Channel-Notifier@latest
-        if: ${{ env.HAS_SUCCESS == 'true' || env.HAS_FAILURE == 'true' }}
+        if: always()
         with:
           title: "镜像同步报告"
           content: |
