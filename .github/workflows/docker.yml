@@ -68,8 +68,6 @@ jobs:
           password: ${{ env.DOCKERHUB_TOKEN }}
         env:
           DOCKER_REGISTRY: index.docker.io
-        # 输出认证状态
-        run: echo "🔑 成功认证 Docker Hub 用户：${{ env.DOCKERHUB_USER }}"
 
       # 核心同步步骤
       - name: Execute image synchronization
