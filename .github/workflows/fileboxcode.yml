@@ -49,7 +49,7 @@ jobs:
             echo "image_exists=false" >> $GITHUB_OUTPUT
             else
             echo "❌ 检查时发生错误 (HTTP $RESPONSE_CODE)"
-            exit 1  # 终止工作流
+            exit 1
             fi
 
   build-and-push:
@@ -64,14 +64,14 @@ jobs:
           repository: vastsa/FileCodeBox
           path: external-repo
 
-      - name: 安全替换配置
+      - name: 写入环境变量配置
         env:
-          NEW_TOKEN: ${{ vars.FileCodeBox_PassWord }}
+          SETTINGS_PY: ${{ vars.FILECODEBOX_SETTINGS }}
         run: |
-          cd external-repo/core
-          sed -E -i "s/(admin_token['\"]?:[\t ]*['\"])FileCodeBox2023(['\"])/\1$NEW_TOKEN\2/" settings.py
-          echo "✅ 已完成 admin_token 替换"
-          grep "admin_token" settings.py
+          mkdir -p external-repo/core
+          echo "$SETTINGS_PY" > external-repo/core/settings.py
+          echo "✅ 已从环境变量写入 settings.py"
+          cat settings.py
 
       - name: 初始化跨平台构建环境
         uses: docker/setup-buildx-action@v3
@@ -95,7 +95,6 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:${{ needs.check-image-existence.outputs.date_short_sha }}
           push: true
-          # 👇 启用多级构建缓存优化
           build-args: |
             BUILDKIT_INLINE_CACHE=1
           cache-from: type=gha
