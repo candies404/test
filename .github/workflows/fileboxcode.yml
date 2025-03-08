@@ -4,7 +4,8 @@ on:
   workflow_dispatch:  # 手动触发
 
 jobs:
-  process-external-settings:
+  change-filecodebox-password:
+    name: 修改FileCodeBox 默认密码
     runs-on: ubuntu-latest
 
     steps:
@@ -38,7 +39,7 @@ jobs:
           cd external-repo/core
           # 替换 Token 并验证文件
           sed -i "s#\"admin_token\": \"FileCodeBox2023\"#\"admin_token\": \"$NEW_TOKEN\"#" settings.py
-          echo "✅ Token 已更新"
+          echo "✅ 已完成 admin_token 替换"
           cat settings.py | grep "admin_token"  # 显示替换结果
 
       # 步骤 3-5: Docker 镜像构建逻辑
@@ -55,7 +56,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./external-repo
-          tags: |    # 动态标签示例: john/filecodebox:2025-01-13-3da8a75
+          tags: |    # 动态标签示例: DOCKERHUB_USERNAME/filecodebox:2025-01-13-3da8a75
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:${{ steps.clone-and-tag.outputs.date_short_sha }}
           push: true
