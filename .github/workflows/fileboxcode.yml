@@ -1,4 +1,4 @@
-name: Process External Settings
+name: 替换FileCodeBox 密码
 
 on:
   workflow_dispatch:  # 手动触发
@@ -8,32 +8,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 步骤 1: 克隆仓库 + 获取带日期的短 SHA
-      - name: 克隆仓库并生成日期化标签标识
+      # 步骤 1: 克隆仓库 + 获取提交日期和短 SHA
+      - name: 克隆仓库并生成提交时间标识
         id: clone-and-tag
         run: |
           git clone https://github.com/vastsa/FileCodeBox.git external-repo
           cd external-repo
-          # 获取仓库短 SHA (如 3da8a75)
+
+          # 获取仓库最新提交的短 SHA (e.g. 3da8a75)
           SHORT_SHA=$(git rev-parse --short HEAD)
-          # 生成当前日期 (格式如 2025-01-13)
-          CURRENT_DATE=$(date -u +"%Y-%m-%d")
-          # 拼接成新标识 (如 2025-01-13-3da8a75)
-          DATE_SHORT_SHA="${CURRENT_DATE}-${SHORT_SHA}"
-          echo "🕒 动态标签标识: $DATE_SHORT_SHA"
+          echo "SHORT_SHA= $SHORT_SHA" 
+          
+          # 获取最新提交的日期 (格式: YYYY-MM-DD)
+          COMMIT_DATE=$(git log -1 --format="%cd" --date=short)
+          echo "COMMIT_DATE= $COMMIT_DATE"
+
+          # 合并为日期 + 短 SHA (e.g. 2025-01-13-3da8a75)
+          DATE_SHORT_SHA="${COMMIT_DATE}-${SHORT_SHA}"
+          echo "🕒 仓库提交标识: $DATE_SHORT_SHA"
+
           # 输出变量供后续步骤使用
-          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "date_short_sha=$DATE_SHORT_SHA" >> $GITHUB_OUTPUT    # 新增输出变量
+          echo "date_short_sha=$DATE_SHORT_SHA" >> $GITHUB_OUTPUT
 
       # 步骤 2: 替换敏感配置
       - name: 替换 admin_token
         env:
-          NEW_TOKEN: ${{ vars.FileCodeBox_PassWord }}   # 修正为 secrets
+          NEW_TOKEN: ${{ vars.FileCodeBox_PassWord }}  # 必须使用 secrets
         run: |
           cd external-repo/core
+          # 替换 Token 并验证文件
           sed -i "s#\"admin_token\": \"FileCodeBox2023\"#\"admin_token\": \"$NEW_TOKEN\"#" settings.py
-          echo "✅ 已完成 admin_token 替换"
-          cat settings.py
+          echo "✅ Token 已更新"
+          cat settings.py | grep "admin_token"  # 显示替换结果
 
       # 步骤 3-5: Docker 镜像构建逻辑
       - name: 初始化 Docker 构建环境
@@ -49,9 +55,9 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./external-repo
-          tags: |  
+          tags: |    # 动态标签示例: john/filecodebox:2025-01-13-3da8a75
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:${{ steps.clone-and-tag.outputs.date_short_sha }}
-          push: true  
+          push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
