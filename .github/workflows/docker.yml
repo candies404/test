@@ -265,7 +265,7 @@ jobs:
           fi
 
           if [[ -n "$skipped_images" ]]; then
-            notification_content+="🔜 **跳过同步**：\n${skipped_images}\n"
+            notification_content+="⏩ **跳过同步**：\n${skipped_images}\n"
           else
             notification_content+="🔜 **跳过同步**：无\n\n"
           fi
