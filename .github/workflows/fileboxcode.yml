@@ -71,10 +71,7 @@ jobs:
           mkdir -p external-repo/core
           echo "$SETTINGS_PY" > external-repo/core/settings.py
           echo "✅ 已从环境变量写入 settings.py"
-          # 添加调试步骤：显示生成路径
-          echo "📁 当前工作目录: $(pwd)"
-          ls -la external-repo/core/
-          cat external-repo/core/settings.py
+          # cat external-repo/core/settings.py
 
       - name: 初始化跨平台构建环境
         uses: docker/setup-buildx-action@v3
@@ -90,6 +87,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 并行构建推送多架构镜像
+        id: build-push 
         uses: docker/build-push-action@v5
         with:
           context: ./external-repo
@@ -102,3 +100,16 @@ jobs:
             BUILDKIT_INLINE_CACHE=1
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          
+      - name: 发送通知
+        uses: candies404/Multi-Channel-Notifier@latest
+        if: ${{ steps.build-push.outcome == 'success' }}
+        with:
+          title: "✅ FileCodeBox 镜像构建成功"
+          content: |
+            项目名称：filecodebox
+            镜像标签：${{ needs.check-image-existence.outputs.date_short_sha }}
+            构建状态：多架构镜像已推送至 Docker Hub
+            镜像地址：https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/filecodebox/tags?name=${{ needs.check-image-existence.outputs.date_short_sha }}
+          wpush_key: ${{ secrets.WPUSH_KEY }}
+          hitokoto: 'false'
