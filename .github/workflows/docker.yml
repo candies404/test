@@ -288,7 +288,7 @@ jobs:
 
       - name: 发送通知
         uses: candies404/Multi-Channel-Notifier@latest
-        if: ${ env.HAS_SUCCESS == 'true' }  # 成功或有失败时发送
+        if: ${{ env.HAS_SUCCESS == 'true' }}  # 成功或有失败时发送
         with:
           title: "镜像同步结果"
           content: |
