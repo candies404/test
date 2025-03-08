@@ -22,27 +22,44 @@ jobs:
       - name: 验证镜像同步格式
         id: validate-mappings
         run: |
-          # 参数优先级处理
-          PROCESSED_MAPPINGS="${INPUT_SYNC_MAPPINGS:-${DOCKER_SYNC_MAPPINGS}}"
-          
-          # 增强空值检查
-          if [[ -z "${PROCESSED_MAPPINGS}" ]]; then
-            echo "::error::Missing sync mappings"
+          # 优先使用手动输入
+          if [ -n "${{ github.event.inputs.sync_mappings }}" ]; then
+            PROCESSED_MAPPINGS="${{ github.event.inputs.sync_mappings }}"
+          else
+            PROCESSED_MAPPINGS="$DOCKER_SYNC_MAPPINGS"
+          fi
+
+          # 强化清洁处理流程
+          CLEAN_MAPPINGS=$(echo "$PROCESSED_MAPPINGS" \
+            | tr -d '\n' \
+            | tr -s ' ' \
+            | sed -E -e 's/[[:space:]]//g' \
+                     -e 's/,{2,}/,/g' \
+                     -e 's/^,//' \
+                     -e 's/,$//')
+
+          if [ -z "$CLEAN_MAPPINGS" ]; then
+            echo "::error::未配置同步映射"
             exit 1
           fi
 
-          # 输入清洗强化处理
-          CLEAN_MAPPINGS=$(echo "${PROCESSED_MAPPINGS}" | \
-            tr -d '\n' | tr -s ' ' | \
-            sed -E 's/[[:space:]]+//g; s/,+/,/g; s/^,//; s/,$//')
+          # 使用精细化分割验证
+          IFS=',' read -r -a MAPPING_PAIRS <<< "$CLEAN_MAPPINGS"
+          INVALID_COUNT=0
 
-          # 优化正则表达式验证
-          if ! grep -qE '^([a-zA-Z0-9][a-zA-Z0-9_.\-/]*=[a-zA-Z0-9][a-zA-Z0-9_.\-/]*)(,[a-zA-Z0-9][a-zA-Z0-9_.\-/]*=[a-zA-Z0-9][a-zA-Z0-9_.\-/]*)*$' <<< "${CLEAN_MAPPINGS}"; then
-            echo "::error::Invalid mapping format"
+          for PAIR in "${MAPPING_PAIRS[@]}"; do
+            if ! grep -qE '^[^=]+=[^=]+$' <<< "$PAIR"; then
+              echo "::error::映射语法错误: '$PAIR' (正确格式: 源镜像=目标镜像)"
+              ((INVALID_COUNT++))
+            fi
+          done
+
+          if [ $INVALID_COUNT -gt 0 ]; then
             exit 1
           fi
 
-          echo "SYNC_MAPPINGS=${CLEAN_MAPPINGS}" >> "${GITHUB_ENV}"
+          echo "SYNC_MAPPINGS=${CLEAN_MAPPINGS}" >> $GITHUB_ENV
+
 
       - name: 设置多架构构建环境
         uses: docker/setup-buildx-action@v3
