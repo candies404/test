@@ -98,22 +98,30 @@ jobs:
           normalize_ref() {
             local ref=$1 context=$2
             
-            # 自动补全tag
+            # 自动补全标签逻辑保持不变
             if [[ "$ref" != *":"* ]]; then
               echo "⚙️  自动补全 ${ref} 的标签为 :latest"
               ref+=":latest"
             fi
             
-            # 处理仓库前缀
-            if [[ "$ref" != *"docker.io"* ]]; then
-              if [[ "$context" == "source" && "$ref" == *"/"* ]]; then
-                ref="docker.io/$ref"
-              else
-                ref="docker.io/$DEST_REPO/${ref%:*}"
+            # 修改前缀处理逻辑
+            if [[ "$context" == "source" ]]; then
+              # 源镜像处理：自动补全官方镜像路径
+              if [[ "$ref" != *"docker.io"* ]]; then
+                if [[ "$ref" == *"/"* ]]; then
+                  ref="docker.io/$ref"
+                else
+                  ref="docker.io/library/$ref"  # 关键修复
+                fi
+              fi
+            else
+              # 目标镜像保持添加用户仓库前缀
+              if [[ "$ref" != *"docker.io"* ]]; then
+                ref="docker.io/$DEST_REPO/$ref"
               fi
             fi
-            
-            # 修复重复前缀
+        
+            # 保留重复前缀清理逻辑
             echo "${ref/docker.io\/docker.io/docker.io}"
           }
 
