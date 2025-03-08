@@ -236,7 +236,7 @@ jobs:
                     log "INFO" "源Digest: ${COLOR_SRC}$src_digest${COLOR_RESET}"
                     log "INFO" "目标Digest: ${COLOR_DST}$dst_digest${COLOR_RESET}"
                     log "INFO" "目标镜像已是最新，跳过同步"
-                    skipped_images+="⏩ ${src_image} → ${dst_image}\n"
+                    skipped_images+="🔜 ${src_image} → ${dst_image}\n"
                     echo "::endgroup::"
                     continue
                 fi
