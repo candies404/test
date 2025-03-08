@@ -1,139 +1,25 @@
-name: 镜像同步工作流
+name: Process External Settings
 
 on:
-  workflow_dispatch:
-  schedule: 
-    - cron: '0 2 * * *'
+  workflow_dispatch:  # 手动触发
 
 jobs:
-  docker-sync:
+  process-external-settings:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 规则预处理
-        id: setup
+      - name: 克隆第三方仓库
         run: |
-          CLEANED_RULES=$(echo "${{ vars.SYNC_MAPPINGS }}" | 
-            tr ',' '\n' |
-            sed -E 's/[[:space:]]+//g; /^$/d' |
-            sort -u
-          )
-          echo "SYNC_RULES<<EOF" >> $GITHUB_ENV
-          echo "$CLEANED_RULES" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "=== 有效规则 ($(echo "$CLEANED_RULES" | wc -l) 条) ==="
-          echo "$CLEANED_RULES"
-      - name: 登录DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          git clone https://github.com/vastsa/FileCodeBox.git external-repo
+          cd external-repo
+          echo "仓库已克隆到路径: $PWD"
 
-      - name: 配置高性能构建环境
-        uses: docker/setup-buildx-action@v3
-        id: buildx
-        with:
-          driver: docker-container
-          driver-opts: |
-            image=moby/buildkit:master
-            network=host
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["dockerpull.cn"]
-            [worker.oci]
-              max-parallelism = 4
-      - name: 执行智能镜像同步
+      - name: 替换 admin_token
         env:
-          DOCKERHUB_USER: "${{ secrets.DOCKERHUB_USERNAME }}"
+          NEW_TOKEN: ${{ secrets.FileCodeBoxPassWord }}  # 从 Secrets 读取值
         run: |
-          export BUILDKIT_PROGRESS=plain
-          failed_rules=()
-          SYNC_EXECUTED=0
-          SYNC_SKIPPED=0
-          # 架构信息提取函数
-          get_platforms() {
-            echo "$1" | sed -E 's/Platform: //g; s/, /\n/g' | tr -d ' ' \
-              | sed -e '/^unknown\/unknown$/d' -e '/^$/d' | sort -u | awk 'NF'
-          }
-          while IFS= read -r rule; do
-            [[ -z "$rule" ]] && continue
-            echo "=== 🛠️ 处理规则: $rule ==="
-            #======= 参数解析 =======#
-            src_image="${rule%%=*}"
-            target_spec="${rule#*=}"
-            target_spec="${target_spec/#docker.io\//}"
-            # 处理源镜像标签
-            if [[ "$src_image" == *":"* ]]; then
-              src_tag="${src_image##*:}"
-              src_name="${src_image%:*}"
-            else
-              src_tag="latest"
-              src_name="$src_image"
-            fi
-            # 确保目标spec包含正确标签
-            if [[ "$target_spec" == *":"* ]]; then
-              target_tag="${target_spec##*:}"
-              target_base="${target_spec%:*}"
-            else
-              target_base="$target_spec"
-              target_tag="$src_tag"
-            fi
-            # 自动补全用户前缀并合成最终spec
-            final_spec="$target_base"
-            [[ ! "$final_spec" == *"/"* ]] && final_spec="$DOCKERHUB_USER/$final_spec"
-            final_spec+=":$target_tag"
-            #======= 架构分析 =======#
-            raw_src_platforms=$(docker buildx imagetools inspect "$src_image" 2>/dev/null || true)
-            src_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_src_platforms")")
-            echo "🔎 源镜像架构 ($(wc -l <<< "$src_platforms") 种)" && sed 's/^/  ➜ /' <<< "$src_platforms"
-            [[ -z "$src_platforms" ]] && { echo "❌ 无效源镜像"; failed_rules+=("$rule"); continue; }
-            #======= 处理目标镜像 =======#
-            echo "✳️ 最终目标镜像: $final_spec"
-            raw_target_platforms=$(docker buildx imagetools inspect "$final_spec" 2>/dev/null || true)
-            target_platforms=$(get_platforms "$(grep 'Platform:' <<< "$raw_target_platforms")")
-            echo "📦 目标镜像架构 ($(wc -l <<< "$target_platforms") 种)" && sed 's/^/  ➜ /' <<< "$target_platforms"
-            #======= 同步策略 =======#
-            if [[ -z "$target_platforms" ]]; then
-              echo "🆕 初始化镜像..."
-              timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image"
-              SYNC_EXECUTED=$((SYNC_EXECUTED+1))
-            else
-              missing_platforms=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$target_platforms"))
-              if [[ -n "$missing_platforms" ]]; then
-                echo "🔄 差异架构 ($(wc -l <<< "$missing_platforms") 种)" && sed 's/^/  ➤ /' <<< "$missing_platforms"
-                timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --append || {
-                  echo "⚡ 增量失败，尝试强制覆盖"; 
-                  timeout 300 docker buildx imagetools create -t "$final_spec" "$src_image" --force;
-                }
-                SYNC_EXECUTED=$((SYNC_EXECUTED+1))
-              else
-                echo "⏭️ 已保持最新，跳过同步"
-                SYNC_SKIPPED=$((SYNC_SKIPPED+1))
-              fi
-            fi
-            #======= 结果验证 =======#
-            final_platforms=$(get_platforms "$(docker buildx imagetools inspect "$final_spec" 2>/dev/null | grep 'Platform:')")
-            missing_check=$(comm -23 <(sort <<< "$src_platforms") <(sort <<< "$final_platforms"))
-            if [[ -n "$missing_check" ]]; then
-              echo "❌ 验证失败，缺少架构：" && sed 's/^/  ▸ /' <<< "$missing_check"
-              failed_rules+=("$rule")
-            else
-              echo "✅ 验证通过" 
-              docker buildx imagetools inspect "$final_spec" | grep -E 'Platform:|Size:' | sed 's/^/  ✨ /'
-            fi
-            echo "─────────────────────────────────────"
-          done <<< "$SYNC_RULES"
-          #======= 可视化报告 =======#
-          total_rules=$(wc -l <<< "$SYNC_RULES" | tr -d ' ')
-          echo "📊=== 同步报告 ==="
-          echo "🔢 处理总数 | $total_rules"
-          echo "🟢 成功同步 | $SYNC_EXECUTED"
-          echo "🟡 跳过同步 | $SYNC_SKIPPED"
-          echo "🔴 同步失败 | ${#failed_rules[@]}"
-          if ((${#failed_rules[@]} > 0)); then
-            echo "🔥 失败详情："
-            printf "  ‼️ %s\n" "${failed_rules[@]}"
-            exit 1
-          fi
+          cd external-repo/core
+          sed -i "s#\"admin_token\": \"FileCodeBox2023\"#\"admin_token\": \"$NEW_TOKEN\"#" settings.py
+          echo "修改后的 settings.py 内容："
+          cat settings.py
+
