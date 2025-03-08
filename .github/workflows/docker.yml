@@ -1,4 +1,4 @@
-name: Docker 镜像同步优化版
+name: Docker 镜像同步
 
 on:
   workflow_dispatch:
@@ -22,12 +22,14 @@ jobs:
       - name: 验证镜像同步格式
         id: validate-mappings
         run: |
+          # 优先使用手动输入
           if [ -n "${{ github.event.inputs.sync_mappings }}" ]; then
             PROCESSED_MAPPINGS="${{ github.event.inputs.sync_mappings }}"
           else
             PROCESSED_MAPPINGS="$DOCKER_SYNC_MAPPINGS"
           fi
 
+          # 强化处理格式
           CLEAN_MAPPINGS=$(echo "$PROCESSED_MAPPINGS" \
             | tr -d '\n' \
             | tr -s ' ' \
@@ -66,7 +68,9 @@ jobs:
 
       - name: 安装 skopeo
         run: |
+          echo "🛠️ 正在安装 skopeo..."
           sudo apt-get update -qq && sudo apt-get install -y skopeo
+          echo "✅ skopeo $(skopeo --version | awk '{print $3}') 安装完成"
 
       - name: 登录 Docker Hub
         uses: docker/login-action@v3
@@ -81,133 +85,142 @@ jobs:
           set -eo pipefail
           shopt -s inherit_errexit
 
+          # 日志系统配置
           declare -A LOG_COLORS=([INFO]="\033[1;32m" [WARN]="\033[1;33m" [ERROR]="\033[1;31m")
           log() {
             local level="${1}" message="${2}" timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             echo -e "${LOG_COLORS[$level]}[${timestamp}] ${level}: ${message}\033[0m" >&2
           }
 
-          declare -A SYNC_RESULTS=([TOTAL]=0 [SUCCESS]=0 [SKIPPED]=0 [FAILED]=0)
+          # 同步状态追踪
+          declare -A SYNC_STATS=([TOTAL]=0 [SUCCESS]=0 [SKIPPED]=0 [FAILED]=0)
+          SYNC_DETAILS=()
 
-          process_mapping() {
-            local source_ref="${1}" dst_ref="${2}"
-            log INFO "🚦 处理映射对：${source_ref} → ${dst_ref}"
-
-            # 规范化镜像引用
-            normalize_image() {
-              local ref="${1}" default_tag="${2}" context="${3}"
-              ref="${ref//${DEST_REPO}\/}" # 去除潜在重复前缀
-              
-              if [[ "$ref" != *":"* ]]; then
-                ref+=":${default_tag}"
-              fi
-              
-              case "$context" in
-                "source") 
-                  [[ "$ref" != */* ]] && ref="library/${ref}"
-                  ;;
-                "target")
-                  [[ "$ref" != */* ]] && ref="${DEST_REPO}/${ref}"
-                  ;;
-              esac
-              echo "docker.io/${ref}"
-            }
-
-            local src_image=$(normalize_image "${source_ref}" "latest" "source")
-            local dst_image=$(normalize_image "${dst_ref}" "$(cut -d: -f2 <<< "${src_image}")" "target")
-
-            # 安全获取架构信息
-            get_architecture() {
-              local image="${1}"
-              local raw_info=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>/dev/null || echo "{}")
-              
-              # 使用Heredoc结构确保语法正确
-              jq -r '
-                if .manifests? then
-                  [
-                    .manifests[].platform |
-                    select((.os != "unknown") and (.architecture != "unknown")) |
-                    "\(.os)/\(.architecture)" + 
-                    (if .variant == "" or .variant == null then "" else "/\(.variant)" end)
-                  ] | 
-                  unique | 
-                  join(",")
-                else
-                  ( [.Os, .Architecture, .Variant] |
-                    map(select(. != "unknown" and . != null)) |
-                    if length >= 2 then
-                      (
-                        .[0] + "/" + .[1] + 
-                        (if .[2] then "/\(.[2])" else "" end)
-                      )
-                    else
-                      "未检测出架构信息"
-                    end
-                  )
-                end' <<< "${raw_info}"
-            }
-
-
-            # 架构比对逻辑
-            compare_arch() {
-              local src_arch=$(get_architecture "${src_image}")
-              local dst_arch=""
-
-              if skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${dst_image}" &>/dev/null; then
-                dst_arch=$(get_architecture "${dst_image}")
-                log INFO "🔍 架构分析\n源：${src_arch}\n目标：${dst_arch}"
-                [[ "${src_arch}" == "${dst_arch}" ]] && return 0
+          # 架构检测逻辑
+          get_architecture() {
+            local image="${1}"
+            local raw_info=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>/dev/null || echo "{}")
+            
+            echo "$raw_info" | jq -r '
+              if .manifests? then
+                [.manifests[].platform |
+                  select((.os != "unknown") and (.architecture != "unknown")) |
+                  "\(.os)/\(.architecture)" + 
+                  (if .variant? and (.variant != "") and (.variant != null) then "/\(.variant)" else "" end)
+                ] | 
+                unique | 
+                join(",")
               else
-                log INFO "⚠️ 目标镜像不存在，需要同步"
-              fi
-              return 1
-            }
+                ( [.Os, .Architecture, .Variant // ""] |
+                  map(select(. != "unknown" and . != null and . != "")) |
+                  if length >= 2 then
+                    (.[0] + "/" + .[1] + 
+                     (if (length >=3) and (.[2] != "") then "/\(.[2])" else "" end))
+                  else
+                    "未检测出架构信息"
+                  end
+                )
+              end' 2>/dev/null || echo "解析失败"
+          }
 
-            # 同步控制流程
-            if compare_arch; then
-              log INFO "⏭️ 架构一致，跳过同步"
-              SYNC_RESULTS[SKIPPED]=$((SYNC_RESULTS[SKIPPED]+1))
-              return
+          # 镜像正规化处理
+          normalize_image() {
+            local ref="${1}" default_tag="${2}" context="${3}"
+            if [[ ! "$ref" == *":"* ]]; then
+              ref="${ref}:${default_tag}"
+            fi
+            case "$context" in
+              "source") 
+                [[ "$ref" != */* ]] && ref="library/${ref}"
+                echo "docker.io/${ref}"
+                ;;
+              "target") 
+                [[ "$ref" != */* ]] && ref="${DEST_REPO}/${ref}"
+                echo "docker.io/${ref}"
+                ;;
+            esac
+          }
+
+          # 架构比较逻辑
+          compare_architectures() {
+            local src="${1}" dst="${2}"
+            local src_arch=$(get_architecture "$src")
+            local dst_arch=$(get_architecture "$dst" 2>/dev/null || echo "")
+            
+            # 特殊异常处理
+            if [[ "$src_arch" == "未检测出架构信息" || "$dst_arch" == "未检测出架构信息" ]]; then
+              log WARN "架构信息缺失，强制执行同步"
+              return 1
+            fi
+            [[ "$src_arch" == "$dst_arch" ]]
+          }
+
+          # 核心同步流程
+          process_mapping() {
+            local src_ref="${1}" dst_ref="${2}"
+            log INFO "🔃 开始处理：${src_ref} → ${dst_ref}"
+            
+            # 镜像正规化
+            src_image=$(normalize_image "$src_ref" "latest" "source")
+            dst_image=$(normalize_image "$dst_ref" "$(cut -d: -f2 <<< "$src_image")" "target")
+            
+            # 目标镜像存在性检查
+            if skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${dst_image}" >/dev/null 2>&1; then
+              if compare_architectures "$src_image" "$dst_image"; then
+                log INFO "⏭️ 镜像架构一致，跳过同步"
+                SYNC_STATS[SKIPPED]=$((SYNC_STATS[SKIPPED]+1))
+                SYNC_DETAILS+=("⏩ 已跳过: ${src_ref} → ${dst_ref}")
+                return
+              fi
+            else
+              log INFO "⚠️ 目标镜像不存在，需要同步"
             fi
 
+            # 同步操作（最多尝试3次）
             for attempt in {1..3}; do
               log INFO "🔄 同步尝试 #${attempt}"
               if docker buildx imagetools create -t "${dst_image}" "${src_image}"; then
-                SYNC_RESULTS[SUCCESS]=$((SYNC_RESULTS[SUCCESS]+1))
-                log INFO "✅ 同步成功"
-                return 0
+                SYNC_STATS[SUCCESS]=$((SYNC_STATS[SUCCESS]+1))
+                SYNC_DETAILS+=("✅ 同步成功: ${src_ref} → ${dst_ref}")
+                log INFO "✅ 完成同步（第${attempt}次尝试）"
+                return
               else
-                log WARN "⚠️ 第${attempt}次尝试失败"
-                sleep $((attempt * 3))
+                SYNC_STATS[FAILED]=$((SYNC_STATS[FAILED]+1))
+                log WARN "⛔️ 第${attempt}次同步失败，5秒后重试..."
+                sleep 5
               fi
             done
-            
-            SYNC_RESULTS[FAILED]=$((SYNC_RESULTS[FAILED]+1))
-            log ERROR "❌ 同步失败"
-            return 1
+            SYNC_DETAILS+=("❌ 同步失败: ${src_ref} → ${dst_ref}")
+            log ERROR "❌ 超出最大重试次数"
           }
 
           # 主处理循环
-          IFS=',' read -ra MAPPING_PAIRS <<< "${SYNC_MAPPINGS}"
-          SYNC_RESULTS[TOTAL]=${#MAPPING_PAIRS[@]}
-          for pair in "${MAPPING_PAIRS[@]}"; do
-            IFS='=' read -r src dst <<< "${pair}"
-            process_mapping "${src}" "${dst}" || true
+          echo "=== 开始处理镜像同步任务 ==="
+          IFS=',' read -ra mappings <<< "${SYNC_MAPPINGS}"
+          SYNC_STATS[TOTAL]=${#mappings[@]}
+          for pair in "${mappings[@]}"; do
+            IFS='=' read -r src dst <<< "$pair"
+            process_mapping "$src" "$dst"
           done
 
           # 生成报告
+          report_content="📈 镜像同步报告\n"
+          report_content+="------------------------------------\n"
+          report_content+="总任务数：${SYNC_STATS[TOTAL]}\n"
+          report_content+="成功次数：${SYNC_STATS[SUCCESS]}\n"
+          report_content+="跳过次数：${SYNC_STATS[SKIPPED]}\n"
+          report_content+="失败次数：${SYNC_STATS[FAILED]}\n\n"
+          report_content+="详细执行结果：\n"
+          report_content+=$(printf "%s\n" "${SYNC_DETAILS[@]}")
+
           echo "NOTIFICATION_CONTENT<<EOF
-          📊 同步统计
-          总数：${SYNC_RESULTS[TOTAL]}
-          ✅ 成功：${SYNC_RESULTS[SUCCESS]}
-          ⏩ 跳过：${SYNC_RESULTS[SKIPPED]}
-          ❌ 失败：${SYNC_RESULTS[FAILED]}
+          $report_content
           EOF" >> $GITHUB_ENV
 
       - name: 发送通知
         uses: candies404/Multi-Channel-Notifier@latest
         if: always()
         with:
-          title: "镜像同步报告"
+          title: "🏗️ Docker 镜像同步报告"
           content: ${{ env.NOTIFICATION_CONTENT }}
           wpush_key: ${{ secrets.WPUSH_KEY }}
