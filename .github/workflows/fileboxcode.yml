@@ -110,6 +110,6 @@ jobs:
             项目名称：filecodebox
             镜像标签：${{ needs.check-image-existence.outputs.date_short_sha }}
             构建状态：多架构镜像已推送至 Docker Hub
-            镜像地址：https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/filecodebox/tags?name=${{ needs.check-image-existence.outputs.date_short_sha }}
+            镜像地址：[点击查看](https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/filecodebox/tags?name=${{ needs.check-image-existence.outputs.date_short_sha }})
           wpush_key: ${{ secrets.WPUSH_KEY }}
           hitokoto: 'false'
