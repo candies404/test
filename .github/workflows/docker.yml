@@ -156,7 +156,7 @@ jobs:
                 [.manifests[].platform |
                     select(.os != "unknown" and .architecture != "unknown") |
                     "\(.os)/\(.architecture)\(if .variant != "" then "/"+.variant else "" end)" |
-                    select(length > 0)
+                    sub("/$"; "")  # 关键修正点
                 ] | unique | join(",")' <<< "$raw_manifest")
                 [[ -z "$arch_list" ]] && { log "ERROR" "无有效架构信息"; return 1; }
                 log "INFO" "检测到多架构镜像：$arch_list"
@@ -286,7 +286,7 @@ jobs:
 
       - name: 发送通知
         uses: candies404/Multi-Channel-Notifier@latest
-        if: ${{ env.HAS_SUCCESS == 'true' || failure() }}  # 成功或有失败时发送
+        # if: ${{ env.HAS_SUCCESS == 'true' || failure() }}  # 成功或有失败时发送
         with:
           title: "镜像同步结果"
           content: |
