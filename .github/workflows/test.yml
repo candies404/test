@@ -16,7 +16,7 @@ jobs:
 
       - name: 替换 admin_token
         env:
-          NEW_TOKEN: ${{ secrets.FileCodeBoxPassWord }}  # 从 Secrets 读取值
+          NEW_TOKEN: ${{ vars.FileCodeBox_PassWord }}  # 从 Secrets 读取值
         run: |
           cd external-repo/core
           sed -i "s#\"admin_token\": \"FileCodeBox2023\"#\"admin_token\": \"$NEW_TOKEN\"#" settings.py
