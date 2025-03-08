@@ -95,5 +95,8 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/filecodebox:${{ needs.check-image-existence.outputs.date_short_sha }}
           push: true
+          # 👇 启用多级构建缓存优化
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
           cache-from: type=gha
           cache-to: type=gha,mode=max
