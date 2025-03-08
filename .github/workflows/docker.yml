@@ -148,20 +148,20 @@ jobs:
           get_architecture() {
             local image=$1
             log "INFO" "获取架构信息：${COLOR_SRC}$image${COLOR_RESET}"
-            # 新条件：仅检查是否存在 manifests 数组
+            # 仅检查是否存在 manifests 数组
             if raw_manifest=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>&1) &&
-              jq -e '.manifests != null' <<< "$raw_manifest" &>/dev/null; then
-              local arch_list
-              arch_list=$(jq -r '
+                jq -e '.manifests != null' <<< "$raw_manifest" &>/dev/null; then
+                local arch_list
+                arch_list=$(jq -r '
                 [.manifests[].platform |
-                  select(.os != "unknown" and .architecture != "unknown") |
-                  "\(.os)/\(.architecture)\(if .variant != "" then "/"+.variant else "" end)"
-                ] | unique | join(", ")' <<< "$raw_manifest")
-
-              [[ -z "$arch_list" ]] && { log "ERROR" "无有效架构信息"; return 1; }
-              log "INFO" "检测到多架构镜像：${arch_list// /,}"
-              echo "$arch_list"
-              return 0
+                    select(.os != "unknown" and .architecture != "unknown") |
+                    "\(.os)/\(.architecture)\(if .variant != "" then "/"+.variant else "" end)" |
+                    select(length > 0)
+                ] | unique | join(",")' <<< "$raw_manifest")
+                [[ -z "$arch_list" ]] && { log "ERROR" "无有效架构信息"; return 1; }
+                log "INFO" "检测到多架构镜像：$arch_list"
+                echo "$arch_list"
+                return 0
             else
               local inspect_info os arch variant
               inspect_info=$(skopeo inspect --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$image" 2>/dev/null)
@@ -254,7 +254,7 @@ jobs:
           # 生成通知内容
           notification_content=""
           if [[ -n "$success_images" ]]; then
-            notification_content+="📊 **镜像同步报告**: "
+            notification_content+="📊 **镜像同步报告**: \n"
             echo "::set-output name=has_success::true"
           else
             notification_content+="📊 同步成功：无\n"
