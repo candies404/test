@@ -55,7 +55,7 @@ jobs:
   build-and-push:
     name: 多架构构建推送 FileCodeBox 镜像
     needs: check-image-existence
-    # if: ${{ needs.check-image-existence.outputs.image_exists == 'false' }}
+    if: ${{ needs.check-image-existence.outputs.image_exists == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - name: 克隆仓库
