@@ -121,26 +121,32 @@ jobs:
               local image="${1}"
               local raw_info=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://${image}" 2>/dev/null || echo "{}")
               
+              # 使用Heredoc结构确保语法正确
               jq -r '
                 if .manifests? then
-                  [.manifests[].platform | 
-                    select(.os != "unknown" and .architecture != "unknown") |
-                    "\(.os)/\(.architecture)\(if .variant != "" then "/"+.variant else "" end)"
-                  ] | unique | join(", ')
+                  [
+                    .manifests[].platform |
+                    select((.os != "unknown") and (.architecture != "unknown")) |
+                    "\(.os)/\(.architecture)" + 
+                    (if .variant == "" or .variant == null then "" else "/\(.variant)" end)
+                  ] | 
+                  unique | 
+                  join(",")
                 else
-                  ([
-                    .Os,.Architecture,.Variant // ""
-                    | select(. != "unknown" and . != null)
-                  ] | [
-                    if .[0] and .[1] then
-                      "\(.[0])/\(.[1])\(if (.[2] | length) >0 then "/"+.[2] else "" end)"
+                  ( [.Os, .Architecture, .Variant] |
+                    map(select(. != "unknown" and . != null)) |
+                    if length >= 2 then
+                      (
+                        .[0] + "/" + .[1] + 
+                        (if .[2] then "/\(.[2])" else "" end)
+                      )
                     else
-                      empty
+                      "未检测出架构信息"
                     end
-                  ]) // ["未检测出架构信息"]
-                end
-              ' <<< "${raw_info}" | tr -d '\n'
+                  )
+                end' <<< "${raw_info}"
             }
+
 
             # 架构比对逻辑
             compare_arch() {
