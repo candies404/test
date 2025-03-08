@@ -71,7 +71,10 @@ jobs:
           mkdir -p external-repo/core
           echo "$SETTINGS_PY" > external-repo/core/settings.py
           echo "✅ 已从环境变量写入 settings.py"
-          cat settings.py
+          # 添加调试步骤：显示生成路径
+          echo "📁 当前工作目录: $(pwd)"
+          ls -la external-repo/core/
+          cat external-repo/core/settings.py
 
       - name: 初始化跨平台构建环境
         uses: docker/setup-buildx-action@v3
