@@ -38,7 +38,7 @@ jobs:
             exit 1
           fi
 
-          if ! echo "$CLEAN_MAPPINGS" | grep -qE '^([a-zA-Z0-9\._/-]+=[a-zA-Z0-9\._/-]+)(,[a-zA-Z0-9\._/-]+=[a-zA-Z0-9\._/-]+)*$'; then
+          if ! echo "$CLEAN_MAPPINGS" | grep -qE '^([\w./-]+(:[\w.-]+)?=[\w./-]+(:[\w.-]+)?)(,[\w./-]+(:[\w.-]+)?=[\w./-]+(:[\w.-]+)?)*$'; then
             echo "::error::无效的映射格式"
             exit 1
           fi
