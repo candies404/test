@@ -195,31 +195,12 @@ jobs:
           sync_image() {
             local src=$1 dst=$2
             log "INFO" "启动同步：${COLOR_SRC}$src → ${COLOR_DST}$dst"
-            
-            # 获取源镜像的 Manifest 类型
-            src_format=$(skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$src" | jq -r '.mediaType')
-            case $src_format in
-                "application/vnd.docker.distribution.manifest.v2+json") 
-                copy_format="v2s2"
-                ;;
-                "application/vnd.oci.image.manifest.v1+json")
-                copy_format="oci"
-                ;;
-                *) 
-                copy_format="v2s2"
-                ;;
-            esac
-
-            # 执行同步并保持 Digest 一致
-            skopeo copy --all \
-                --src-creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" \
-                --dest-creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" \
-                --preserve-digest \
-                --format "$copy_format" \
-                "docker://$src" "docker://$dst" || {
+            skopeo copy --all --src-creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" \
+                        --dest-creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" \
+                        "docker://$src" "docker://$dst" || {
                 log "ERROR" "同步失败"
                 return 1
-                }
+            }
             log "INFO" "同步完成"
             }
 
