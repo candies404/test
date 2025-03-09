@@ -194,22 +194,15 @@ jobs:
 
           sync_image() {
             local src=$1 dst=$2
-            log "INFO" "启动同步：${COLOR_SRC}$src${COLOR_RESET} → ${COLOR_DST}$dst${COLOR_RESET}"
-          
-            # 同步模式判断联动修复
-            if skopeo inspect --raw --creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" "docker://$src" | jq -e '.manifests != null' &>/dev/null; then
-              log "INFO" "使用多架构同步模式"
-              docker buildx imagetools create -t "$dst" "$src" || {
-                log "ERROR" "多架构同步失败"
+            log "INFO" "启动同步：${COLOR_SRC}$src → ${COLOR_DST}$dst"
+            skopeo copy --all --src-creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" \
+                        --dest-creds "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" \
+                        "docker://$src" "docker://$dst" || {
+                log "ERROR" "同步失败"
                 return 1
-              }
-            else
-              docker pull --quiet "$src" || { log "ERROR" "镜像拉取失败"; return 1; }
-              docker tag "$src" "$dst" || { log "ERROR" "标签设置失败"; return 1; }
-              docker push --quiet "$dst" || { log "ERROR" "推送失败"; return 1; }
-            fi
+            }
             log "INFO" "同步完成"
-          }
+            }
 
           # 处理同步循环
           for source_ref in "${!SYNC_MAP[@]}"; do
